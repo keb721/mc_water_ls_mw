@@ -38,7 +38,7 @@ module userparams
   real(kind=dp),save :: wl_alpha     = 1.0               ! prefactor in above formula
   logical,save       :: eta_interp   = .true.            ! inerpolate between grid values of eta
   logical,save       :: samplerun    = .false.           ! sampling run with constant eta
-  logical,save       :: leshift      = .false.           ! shift by refernce energy config and correct in output
+  logical,save       :: leshift      = .false.           ! shift by reference energy config and correct in output
 
   integer,save       :: nbins = 200                      ! number of bins to use
   real(kind=dp),save :: mu_min = -8000.0_dp              ! minimum overlap parameter
@@ -70,6 +70,10 @@ module userparams
   integer,save        :: deltaG_int      = 100000        ! interval at which to compute deltaG
   integer,save        :: max_mc_cycles   = 1000          ! total number of mc cycles
   integer,save        :: eq_mc_cycles    = 25000         ! number of equilibration cycles
+
+  ! parallelisation
+  character(2),save   :: parallel_strategy = 'mw'        ! Multiple walkers of domain decomposition (dd)
+  integer,save        :: window_overlap = 2              ! Number of bins to overlap at window boundaries
 
   ! seedname for calculation
   character(30),save :: seedname

@@ -100,34 +100,41 @@ module mc_moves
   ! Lookup list for "other" lattice
   integer,dimension(2) :: partner_lattice
 
+  ! Local (per MPI rank) domain variables
+  real(kind=dp),save :: my_mu_max, my_mu_min
+  integer,save :: my_start_bin, my_end_bin
+
 
 contains
 
   subroutine mc_cycle()
     !------------------------------------------------------------------------------!
-    ! Performs an MC cycle and updates parameters to acheive a target acceptance   !
-    ! ratio of 50%                                                                 !
+    ! Performs an MC cycle and updates parameters toward target acceptance ratio   !
+    ! if during equilibration phase and is samplerun is not set true.              !
     !------------------------------------------------------------------------------!
     ! D.Quigley January 2007                                                       !
+    !           Februray 2019 : Updated for domain decomposition option.           !
     !------------------------------------------------------------------------------!
-    use comms,      only : comms_allreduce_eta,comms_allreduce_hist
+    use comms,      only : comms_allreduce_eta,comms_allreduce_hist,myrank,size
     use random,     only : random_uniform_random
     use userparams, only : nwater,mc_ensemble,nbins,allow_switch,  &
          allow_vol,allow_trans,pressure,num_lattices, &
          mc_always_switch,mc_trans_prob,mc_vol_prob,mc_switch_prob, &
          deltaG_int,chkpt_dump_int,list_update_int, &
-         flat_chk_int,latt_sync_int,monitor_int,mpi_sync_int
+         flat_chk_int,latt_sync_int,monitor_int,mpi_sync_int, &
+         parallel_strategy, eq_mc_cycles
     use model,      only : volume
     use util,       only : util_determinant,util_recipmatrix
     use energy
-
 
     implicit none
 
     real(kind=dp),save :: sum_prob,transP,swP,volP
     real(kind=dp)      :: xi
-    integer            :: imove,ils
+    integer            :: imove,ils,irank
+    logical            :: in_window
     logical,save       :: firstpass = .true.
+
 
     ! Increment MC cycle number
     mc_cycle_num = mc_cycle_num + 1
@@ -161,6 +168,32 @@ contains
     end if
 
     !-------------------------------------!
+    ! Sanity check on equilibration       !
+    !-------------------------------------!
+    if (parallel_strategy == 'dd') then      
+       if (mc_cycle_num == eq_mc_cycles) then
+
+          ! Check that the walker on this MPI task has made its way into 
+          ! its window. Otherwise we've got a problem and need to abort.
+          in_window = ( ( ls_mu > my_mu_min ) .and. ( ls_mu < my_mu_max ) )
+          !call comms_logical_and(in_window) ! TODO
+          
+          if ( .not. in_window) then
+             write(0,'("Error : Not all walkers have reached their designated window ")')
+             write(0,'("        after ",I10," MC cycles.")')eq_mc_cycles
+             write(0,*)
+             do irank = 0,size-1
+                if (myrank==irank) then
+                   write(0,'("Rank ",I2, " has overlap parameter mu = ",F12.6)')irank,ls_mu
+                end if
+             end do
+             stop
+          end if
+       end if
+    end if
+
+
+    !-------------------------------------!
     ! Perform nwater trial moves          !
     !-------------------------------------!
 
@@ -184,31 +217,46 @@ contains
           call mc_update_wl_bins()
           mc_attempted_vsteps = mc_attempted_vsteps + 1
        elseif (xi<swP) then
-          call mc_lattice_switch()
-          mc_attempted_swtch = mc_attempted_swtch + 1
+          if (.not.((parallel_strategy=='dd').and.(mc_cycle_num<eq_mc_cycles))) then
+             call mc_lattice_switch()
+             mc_attempted_swtch = mc_attempted_swtch + 1
+          end if
        end if
        
        if (mc_always_switch) then
-          call mc_lattice_switch()
-          mc_attempted_swtch = mc_attempted_swtch + 1
+          if (.not.((parallel_strategy=='dd').and.(mc_cycle_num<eq_mc_cycles))) then
+             call mc_lattice_switch()
+             mc_attempted_swtch = mc_attempted_swtch + 1
+          end if
        end if
 
     end do
 
     ! accumulate the average energy in the current sample block
     average_energy(1:num_lattices) = average_energy(1:num_lattices) + model_energy(1:num_lattices)
-    if ( mc_ensemble == 'npt' ) average_energy(1:num_lattices) = average_energy(1:num_lattices) + pressure*volume(1:num_lattices)
+    if ( mc_ensemble == 'npt' ) & 
+         average_energy(1:num_lattices) = average_energy(1:num_lattices) + pressure*volume(1:num_lattices)
 
-    if (num_lattices == 2) then
+    ! If doing lattice switching with multiple walkers, sychronise weights and histograms
+    if ((num_lattices == 2)) then
 
        ! MPI - synchronise histogram and weights at this interval
        if ( mod(mc_cycle_num,mpi_sync_int)==0 ) then
           !       write(mylog,'(" DEBUG - syncing weights and histograms at cycle ",I10)')mc_cycle_num
-          call comms_allreduce_eta(weight,nbins)
-          call comms_allreduce_hist(histogram,nbins)
+
+          if (parallel_strategy=='mw') then
+             ! Construct global histogram as sum over individual walker histograms
+             call comms_allreduce_eta(weight,nbins)
+             call comms_allreduce_hist(histogram,nbins)
+          elseif (parallel_strategy=='dd') then
+             ! Build global histogram from individual windows
+
+          endif
+
+
        end if
        
-    end if
+    end if ! end if lattice-switching
     
     ! Adjust move sizes, report acceptance rates and 
     ! output histogram and weight functions.
@@ -404,31 +452,14 @@ contains
        firstcycle = .false.
     end if
 
-!!$    write(510+myrank,'(I5)')Nwater
-!!$    write(520+myrank,'(I5)')Nwater
-
     ! read cell data
     read(chk+fnu)hmatrix
-
-!!$    write(510+myrank,'(" * ",9F15.6)')hmatrix(:,:,1)*bohr_to_ang
-!!$    write(520+myrank,'(" * ",9F15.6)')hmatrix(:,:,2)*bohr_to_ang
-
-
 
     ! read reference positions
     read(chk+fnu)ref_ljr
 
     ! read positions
     read(chk+fnu)ljr
-
-!!$    do i = 1,Nwater
-!!$       write(510+myrank,'(" O ",3F15.6)')ljr(:,1,i,1)*bohr_to_ang
-!!$       write(520+myrank,'(" O ",3F15.6)')ljr(:,1,i,2)*bohr_to_ang
-!!$    end do
-!!$
-!!$    call flush(510+myrank)
-!!$    call flush(520+myrank)
-
 
     ! read current lattice if present
     read(chk+fnu,end=10)ls
@@ -448,19 +479,21 @@ contains
     ! change in energy. The move is accepted or rejected appropriately.            !
     !------------------------------------------------------------------------------!
     ! D.Quigley January 2007                                                       !
+    !           Feburary 2019 : Updated for domain decomposition.                  !
     !------------------------------------------------------------------------------!
     use constants, only : Kb
-    use comms,     only : myrank,comms_bcastreal,comms_allreduce_eta
+    use comms,     only : myrank,comms_bcastreal,comms_allreduce_eta,size
     use io,        only : glog,mylog
-    use model,     only : volume,hmatrix,recip_matrix
+    use model,     only : volume,hmatrix,recip_matrix,ls
     use energy,    only : model_energy,compute_model_energy,compute_ivects
     use userparams,only : temperature,pressure,nbins,wl_factor, &
-                          nwater,mu_max,mu_min,num_lattices,leshift
+                          nwater,mu_max,mu_min,num_lattices,leshift, &
+                          parallel_strategy, window_overlap
     use util,      only : util_determinant,util_recipmatrix
     implicit none
     integer,intent(out) :: outcycle ! pass first cycle num back up to caller
 
-    integer :: ierr,k,ils,Ns,ibin
+    integer :: ierr,k,ils,Ns,ibin,irank,bins_per_window
     logical :: lexist1,lexist2,lexist
     character(3)  :: rankstring
     character(29) :: dumchar29
@@ -589,6 +622,68 @@ contains
     end do
     av_binwidth = av_binwidth/real(nbins,kind=dp)
 
+    ! Parallel strategy
+    select case (parallel_strategy)
+       case('dd')
+
+          ! Domain decomposition with overlap at domain boundaries
+          bins_per_window = nbins/size 
+
+          if (myrank==0) then
+             my_start_bin = 1
+             my_end_bin   = bins_per_window + window_overlap
+
+             my_mu_min = mu_min
+             my_mu_max = sum(binwidth(1:my_end_bin))
+
+          end if
+
+          do irank = 1,size-2
+             if (irank==myrank) then
+
+                my_start_bin = irank * bins_per_window - window_overlap
+                my_end_bin   = irank * bins_per_window + window_overlap
+
+                my_mu_min = sum(binwidth(1:my_start_bin-1))
+                my_mu_max = sum(binwidth(1:my_end_bin))
+
+             end if
+          end do
+
+          if (myrank==size-1) then
+             my_start_bin = myrank * bins_per_window - window_overlap
+             my_end_bin = nbins             
+
+             my_mu_min = sum(binwidth(1:my_start_bin-1))
+             my_mu_max = mu_max
+
+          end if
+
+          ! Identify which lattice should be active
+          if (my_mu_max < 0.0_dp) ls = 1
+          if (my_mu_min > 0.0_dp) ls = 2
+
+          write(mylog,'("#                                                              #")')
+          write(mylog,'("# This rank will use bin ",I6," to ",I6,"                   #")')my_start_bin,my_end_bin
+          write(mylog,'("# Lower limit of mu: ",E12.6,"                              #")')my_mu_min
+          write(mylog,'("# Upper limit of mu: ",E12.6,"                              #")')my_mu_max
+          write(mylog,'("#                                                              #")')
+
+       case('mw')
+          
+          ! Every MPI rank works on the same domain
+          my_start_bin = 1
+          my_end_bin = nbins
+
+          my_mu_min = mu_min
+          my_mu_max = mu_max
+
+       case default
+          stop 'Unknown parallel strategy'
+       end select
+
+
+
     !--------------------------------------------------!
     ! Read any existing set of multicanonical weights. !
     ! These will be subsequently replaced if this is a !
@@ -601,6 +696,7 @@ contains
 
     if (num_lattices==2) then
 
+       ! Rank 0 - reads weights and broadcasts them to all other ranks
        if (myrank==0) then
           
           inquire(file='eta_weights.dat',exist=lexist)
@@ -633,14 +729,18 @@ contains
           end if
           
        end if
-       
+
        ! MPI - make sure everyone has the same weights
-!!$    write(0,'("Rank ",I2," about to do some comms in mc_moves.F90")')myrank
        call comms_bcastreal(wl_factor,1)
-!!$    write(0,'("Rank ",I2," has returned from comms_bcastreal")')myrank
        call comms_allreduce_eta(weight,nbins)
-!!$    write(0,'("Rank ",I2," has returned from comms_allreduce_eta")')myrank
-       
+
+       if (parallel_strategy=='dd') then
+
+          ! Keep only the portion of the weights that relate to my window.
+          weight(1:my_start_bin-1) = 0.0_dp
+          weight(my_end_bin+1:nbins) = 0.0_dp
+
+       end if
        
        if ( wl_factor < orig_wl_factor ) then
           write(mylog,'("#                                                              #")')
@@ -726,7 +826,7 @@ contains
     !------------------------------------------------------------------------------!
     ! D.Quigley September 2006                                                     !
     !------------------------------------------------------------------------------!
-    use userparams, only : nbins,mu_max,mu_min,eta_interp
+    use userparams, only : nbins,eta_interp
     implicit none
    
     real(kind=dp),intent(in) :: mu_in
@@ -734,11 +834,11 @@ contains
 
     real(kind=dp) :: gradient
 
-    if (mu_in < mu_min ) then 
+    if (mu_in < my_mu_min ) then 
        eta_weight = huge(1.0_dp)
        return
     endif 
-    if (mu_in > mu_max ) then
+    if (mu_in > my_mu_max ) then
        eta_weight = huge(1.0_dp)
        return
     end if
@@ -817,7 +917,6 @@ contains
     lsn = partner_lattice(ls)
 
     ! beta on this rank
-    !beta = beta_rank(myrank)
     beta = 1.0_dp/(Kb*temperature)
 
     ! select a molecule at random
@@ -968,6 +1067,10 @@ contains
     zeta = random_uniform_random()
     if (zeta<min(1.0_dp,exp(-diffkT))) then
               
+       !===============!
+       ! Move accepted !
+       !===============!
+
 #ifdef DEBUG
        !write(0,'("DEBUG - Accepted a translation with prob :",2F15.6)')min(1.0_dp,exp(-diffkT)),zeta
 #endif
@@ -990,12 +1093,13 @@ contains
 
     else
 
+       !===============!
+       ! Move rejected !
+       !===============!
 
 #ifdef DEBUG
        !write(0,'("DEBUG - Rejected a translation with prob :",2F15.6)')min(1.0_dp,exp(-diffkT)),zeta
 #endif
-
-
 
        do ils = 1,num_lattices
 
@@ -1014,8 +1118,9 @@ contains
 
 #ifdef DEBUG
        energy_dbg = model_energy
-       call compute_model_energy(1)
-       call compute_model_energy(2)
+       do ils = 1,num_lattices
+          call compute_model_energy(ils)
+       end do
        energy_dbg = energy_dbg - model_energy
        !if ( any(energy_dbg>1d-10) ) then
           write(0,'("DEBUG - translate 2, energy diff = ",2F15.6)')energy_dbg*hart_to_ev
@@ -1069,15 +1174,7 @@ contains
     lsn = partner_lattice(ls)
 
     ! store properties of energy module in case of rejection
-!!$    backup_kx            = kx
-!!$    backup_ky            = ky
-!!$    backup_kz            = kz
-!!$    backup_rho_k         = rho_k
-!!$    backup_expor         = expor
-!!$    backup_recip_energy  = recip_energy
     backup_model_energy(1:num_lattices)  = model_energy(1:num_lattices)
-
-!!$    backup_local_real_energy = local_real_energy
 
     ! store old model energy
     old_energy(1:num_lattices) = model_energy(1:num_lattices)
@@ -1184,7 +1281,6 @@ contains
        new_energy(ils) = model_energy(ils)
 
     end do
-
 
     ! change in energy
     deltaE(1:num_lattices) = new_energy(1:num_lattices) - old_energy(1:num_lattices)
@@ -1366,6 +1462,7 @@ contains
     use energy, only     : model_energy
     use random, only     : random_uniform_random
     use userparams, only : pressure,nwater,mc_ensemble,temperature,leshift,num_lattices
+
     implicit none
     real(kind=dp) :: beta,compare,x,old_eta,new_eta,diffkT
     integer :: lsn
@@ -1373,7 +1470,7 @@ contains
     if (num_lattices==1) then
        stop 'Called mc_lattice switch with only 1 lattice!'
     end if
-
+    
     !return
     beta  = 1.0_dp/(kB*temperature)
 
@@ -1492,6 +1589,9 @@ contains
 !!$       end do
 !!$       incr = max(incr,wl_factor)
 !!$    end if
+
+    ! TODO update this for parallel_strategy='dd'
+    ! minbin should be lowest non-zero entry in window
 
     ! Increment the current bin only
     weight(k)  = weight(k)  + av_binwidth*incr/binwidth(k)

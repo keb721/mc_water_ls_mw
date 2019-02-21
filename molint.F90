@@ -98,8 +98,9 @@ contains
        km = floor((sw_a*mw_sigma+1.0_dp)/sqrt(dot_product(hmatrix(:,3,ils),hmatrix(:,3,ils))))+1
 
        nivect(ils) = (2*im+1)*(2*jm+1)*(2*km+1)
+#ifdef DEBUG
        write(0,'("DEBUG - number of ivects for lattice ",I2," : ",I4)')ils,nivect(ils)
-
+#endif
        volume(ils) = abs(util_determinant(hmatrix(:,:,ils)))
 
     end do
@@ -203,7 +204,6 @@ contains
     !------------------------------------------------------------------------------!
     ! D.Quigley September 2006                                                     !
     !------------------------------------------------------------------------------!
-    use userparams, only : nwater
     use model,      only : ljr
     implicit none
     integer,intent(in) :: imol,ils
@@ -211,7 +211,7 @@ contains
     ! local variables
     real(kind=dp)                :: Evdw,rcsq,ctheta,exp1,exp2,csq
     real(kind=dp)                :: r1_ij,r2_ij,r1_ik,r2_ik,tmpE,r1_jk,r2_jk
-    real(kind=dp),dimension(3)   :: v_ij,v_ik,tmpvect,tmpvect2
+    real(kind=dp),dimension(3)   :: tmpvect,tmpvect2
     real(kind=dp),dimension(3)   :: ilj,jlj,klj
 
     integer :: jmol,ln,ln2 ! loop counters
@@ -332,7 +332,7 @@ contains
 
     implicit none
     integer,intent(in) :: ils
-    real(kind=dp),dimension(3)   :: v_ij,v_ik,tmpvect,tmpvect2
+    real(kind=dp),dimension(3)   :: tmpvect,tmpvect2
     real(kind=dp)                :: r1_ij,r2_ij,r1_ik,r2_ik
     real(kind=dp)                :: Evdw,csq,ctheta,exp1,exp2
     real(kind=dp)                :: tmpE,rcsq

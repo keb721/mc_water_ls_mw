@@ -108,9 +108,9 @@ contains
 
        if (num_args<1) then
           write(0,*)
-          write(0,*) '                 M C _ W A T E R           '
+          write(0,*) '           M C _ W A T E R _ L S _ M W     '
           write(0,*)
-          write(0,*) '            Usage: mc_water <input file>   '
+          write(0,*) '         Usage: mw_water_ls <input file>   '
           write(0,*)
           write(0,*) '        D. Quigley - University of Warwick '
           write(0,*)
@@ -789,21 +789,18 @@ contains
     ! charmm style cell vector array
     real(kind=dp),dimension(6) :: xtlabc   
 
-    integer :: ierr,i,ll,os
+    integer :: ierr,i,os
 
     allocate(rcopy(1:3,nwater*num_lattices),stat=ierr)
-    ll = ls
-    if (num_lattices == 1 ) ll = 1
 
     ! Active lattice
-    rcopy(:,1:nwater) = ljr(:,1,1:nwater,ll)*bohr_to_ang
+    rcopy(:,1:nwater) = ljr(:,1,1:nwater,ls)*bohr_to_ang
 
     ! Other lattice if present
     if (num_lattices==2) then
 
-       if (ll==1) os = 2
-       if (ll==2) os = 1
-    
+       if (ls==1) os = 2
+       if (ls==2) os = 1
        rcopy(:,nwater+1:nwater*num_lattices) = ljr(:,1,1:nwater,os)*bohr_to_ang
 
     end if
@@ -812,13 +809,13 @@ contains
     open(unit=dcd,file='mW.dcd',status='old',position='append',iostat=ierr,form='unformatted')
     if (ierr/=0) stop 'Error opening mW.dcd file - quitting'
     
-    xtlabc(1) = sqrt(dot_product(hmatrix(:,1,ll),hmatrix(:,1,ll)))*bohr_to_ang
-    xtlabc(3) = sqrt(dot_product(hmatrix(:,2,ll),hmatrix(:,2,ll)))*bohr_to_ang
-    xtlabc(6) = sqrt(dot_product(hmatrix(:,3,ll),hmatrix(:,3,ll)))*bohr_to_ang
+    xtlabc(1) = sqrt(dot_product(hmatrix(:,1,ls),hmatrix(:,1,ls)))*bohr_to_ang
+    xtlabc(3) = sqrt(dot_product(hmatrix(:,2,ls),hmatrix(:,2,ls)))*bohr_to_ang
+    xtlabc(6) = sqrt(dot_product(hmatrix(:,3,ls),hmatrix(:,3,ls)))*bohr_to_ang
 
-    unita(:)  = hmatrix(:,1,ll)/xtlabc(1)
-    unitb(:)  = hmatrix(:,2,ll)/xtlabc(3)
-    unitc(:)  = hmatrix(:,3,ll)/xtlabc(6)
+    unita(:)  = hmatrix(:,1,ls)/xtlabc(1)
+    unitb(:)  = hmatrix(:,2,ls)/xtlabc(3)
+    unitc(:)  = hmatrix(:,3,ls)/xtlabc(6)
 
     xtlabc(2) = acos(dot_product(unita,unitb))*180.0*invPi
     xtlabc(4) = acos(dot_product(unita,unitc))*180.0*invPi
@@ -872,7 +869,7 @@ contains
        write(0,*)'HISTORY file output for selected model not implemented'
     end select
 
-    n = anint(natms)
+    n = anint(natms,kind=dp)
 
     allocate(atname(1:n),stat=ierr)
     allocate(weight(1:n),stat=ierr)
@@ -961,7 +958,7 @@ contains
     imcon  = 3.0_dp
     tstep  = 1.0_dp
 
-    n = anint(natms)
+    n = anint(natms,kind=dp)
     allocate(xxx(1:n),stat=ierr)
     allocate(yyy(1:n),stat=ierr)
     allocate(zzz(1:n),stat=ierr)
@@ -1065,7 +1062,7 @@ contains
     
     
     write(glog,'("#==============================================================#")')
-    write(glog,'("#      Lattice-switching MC code for rigid-body molecules      #")')
+    write(glog,'("#      Lattice-switching MC code for mW water molecules        #")')
     write(glog,'("#                                                              #")')
     write(glog,'("#                         D. Quigley                           #")')
     write(glog,'("#                 University of Warwick, UK                    #")')

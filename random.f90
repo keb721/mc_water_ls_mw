@@ -29,11 +29,6 @@ Module Random
   !                      P r i v a t e   V a r i a b l e s                    !
   !---------------------------------------------------------------------------!
 
-  !For the uniform random number generator, we presume a 32-bit integer in order
-  !to do bit-shuffling, so define and store here.
-  Integer, Parameter        :: bit_32=Selected_int_kind(9)
-  Integer(kind=bit_32),Save :: ix,iy                     !intermediate randoms
-
   Logical,Save              :: random_initialised=.False.
 
 Contains

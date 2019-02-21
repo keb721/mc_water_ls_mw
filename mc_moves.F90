@@ -62,16 +62,12 @@ module mc_moves
   ! lattice-switch order parameter
   real(kind=dp),save :: ls_mu
 
-  ! binned quantities
-  integer,save       :: eta_count
-
   real(kind=dp),allocatable,dimension(:),save   :: histogram
   real(kind=dp),allocatable,dimension(:),save   :: weight
   real(kind=dp),allocatable,dimension(:),save   :: mu_bin
   real(kind=dp),allocatable,dimension(:),save   :: binwidth
   real(kind=dp) :: av_binwidth
   
-
   ! variables controlling the non-uniform bin-grid
   real(kind=dp),save :: a_pos,a_neg  ! Initial value of GPs
   real(kind=dp),save :: r_pos,r_neg  ! Common ratios of GPs
@@ -91,9 +87,6 @@ module mc_moves
   ! Checks for range of overlap parameter change in a single move
   real(kind=dp),save :: max_dmu=0.0_dp,min_dmu=huge(1.0_dp),dmu 
   
-  real(kind=dp),dimension(3) :: vec1,vec2
-  logical :: lsync
-
   ! Extra variables for Swetnam-style Wang-Landau
   real(kind=dp),save:: sumhist = 0.0
 
@@ -104,7 +97,8 @@ module mc_moves
   integer,parameter :: wlf = 64    ! record of f values
   integer,parameter :: chk = 65    ! checkpoint file
 
-  integer,parameter :: dbx = 666   ! debugging of H-bond moves
+  ! Lookup list for "other" lattice
+  integer,dimension(2) :: partner_lattice
 
 
 contains
@@ -335,9 +329,8 @@ contains
     !------------------------------------------------------------------------------!
     use comms,      only : myrank,comms_set_histogram,comms_bcastint
     use io,         only : mylog
-    use userparams, only : nbins,mc_max_trans,wl_factor,mc_dv_max,nwater
+    use userparams, only : nbins,mc_max_trans,wl_factor,mc_dv_max
     use model,      only : hmatrix,ljr,ref_ljr,ls
-    use constants,  only : bohr_to_ang
 
     implicit none
 
@@ -700,6 +693,14 @@ contains
        ls_mu = ls_mu*beta - real(Nwater,kind=dp)*log(volume(1)/volume(2))
     end if
 
+    ! Create lookup array for 'other lattice'
+    if (num_lattices==2) then
+       partner_lattice = (/2,1/)
+    else
+       partner_lattice = (/1,1/)
+    end if
+
+
     return
 
   end subroutine mc_init
@@ -791,14 +792,13 @@ contains
     !------------------------------------------------------------------------------!
     ! D.Quigley September 2006                                                     !
     !------------------------------------------------------------------------------!
-    use constants,  only : kb,invpi,hart_to_ev
+    use constants,  only : kb,invpi
     use random
     use userparams, only : nwater,mc_max_trans,temperature,num_lattices, &
          mc_ensemble,pressure,leshift
     use model,      only : ljspm,ljr,ls,volume,hmatrix,recip_matrix
     use energy,     only : compute_local_real_energy,model_energy,compute_model_energy
     implicit none
-
 
     ! local variables
     real(kind=dp) :: beta,x,y,z,norm,r,sx,sy,sz,diffkT
@@ -807,17 +807,14 @@ contains
     real(kind=dp),dimension(2)   :: new_local_energy
     real(kind=dp),dimension(3,2) :: transvec
 
-    real(kind=dp) :: min_new_energy
-
     ! loop counters/array indices
-    integer :: imol,ic,ilj,ics,ils,lsn,idim
+    integer :: imol,ilj,ils,lsn,idim
 
 #ifdef DEBUG
     real(kind=dp),dimension(2) :: energy_dbg
 #endif
-
-    if (ls==1) lsn = 2
-    if (ls==2) lsn = 1
+    
+    lsn = partner_lattice(ls)
 
     ! beta on this rank
     !beta = beta_rank(myrank)
@@ -941,24 +938,18 @@ contains
        
        diffkT = deltaE(ls)*beta + eta_new - eta_old
 
-       if (leshift) then
-
-          min_new_energy = minval(model_energy+pressure*volume-ref_enthalpy,1)
-          lsn     = minloc(model_energy+pressure*volume-ref_enthalpy,1)
-          
-       else
-          
-          min_new_energy = minval(model_energy+pressure*volume,1)
-          lsn     = minloc(model_energy+pressure*volume,1)
-          
-       end if
 
 #ifdef MINU
 
+       ! In which reference lattice does this move result in the lower energy?
+       if (leshift) then
+          lsn = minloc(model_energy+pressure*volume-ref_enthalpy,1)          
+       else          
+          lsn = minloc(model_energy+pressure*volume,1)          
+       end if
+
+       ! Is this is different to the current lattice then incorporate a switch into the move
        if (lsn/=ls) then
-          !write(*,'(3F12.6,2I2)')backup_model_energy(ls),model_energy,ls,lsn
-          
-          ! This move will incorporate a lattice switch from ls to lsn
           if (mc_ensemble == 'npt' ) then
              diffkT = beta*model_energy(lsn) - beta*backup_model_energy(ls) + beta*pressure*(volume(lsn)-volume(ls)) &
                   -real(Nwater,kind=dp)*log(volume(lsn)/volume(ls)) + eta_new - eta_old      
@@ -1067,14 +1058,15 @@ contains
 
     real(kind=dp),dimension(3)   :: old_pos,new_pos,transvec
 
-    real(kind=dp) :: min_new_energy
     integer :: lsn
 
     ! loop counters/array indices
-    integer :: idim,jdim,ils,ics,ilj,imol
+    integer :: idim,jdim,ils,ilj,imol
 
 
     beta = 1.0_dp/(kB*temperature)
+
+    lsn = partner_lattice(ls)
 
     ! store properties of energy module in case of rejection
 !!$    backup_kx            = kx
@@ -1195,7 +1187,7 @@ contains
 
 
     ! change in energy
-    deltaE = new_energy-old_energy
+    deltaE(1:num_lattices) = new_energy(1:num_lattices) - old_energy(1:num_lattices)
 
     if (num_lattices==2) then
 
@@ -1215,24 +1207,18 @@ contains
              - real(Nwater,kind=dp)*log(volume(ls)/old_volume(ls))
 
     if (num_lattices==2) then
-    
-
-       if (leshift) then
-          
-          min_new_energy = minval(model_energy+pressure*volume-ref_enthalpy,1)
-          lsn     = minloc(model_energy+pressure*volume-ref_enthalpy,1)
-          
-       else
-          
-          min_new_energy = minval(model_energy+pressure*volume,1)
-          lsn     = minloc(model_energy+pressure*volume,1)
-          
-       end if
-       
+           
 #ifdef MINU
-       
+    
+       ! In which reference lattice does this move result in the lower energy?
+       if (leshift) then          
+          lsn     = minloc(model_energy+pressure*volume-ref_enthalpy,1)          
+       else          
+          lsn     = minloc(model_energy+pressure*volume,1)          
+       end if
+
+       ! Is this is different to the current lattice then incorporate a switch into the move
        if (lsn/=ls) then
-          ! This move will incorporate a lattice switch from ls to lsn
           diffkT = beta*model_energy(lsn) - beta*backup_model_energy(ls) + beta*pressure*(volume(lsn)-old_volume(ls)) &
                -real(Nwater,kind=dp)*log(volume(lsn)/old_volume(ls)) + new_eta - old_eta     
           if (leshift) diffkT = diffkT - beta*ref_enthalpy(lsn) + beta*ref_enthalpy(ls)  
@@ -1245,25 +1231,26 @@ contains
               
     ! calculate acceptance probability based on the current lattice
     compare = exp(-diffkT)
-
-
     compare = min(1.0_dp,compare)
-
 
     if (x < compare) then
        mc_accepted_vsteps = mc_accepted_vsteps + 1
 
-       dmu = abs(old_mu - ls_mu)       
-       if ( dmu < min_dmu ) min_dmu = dmu
-       if ( dmu > max_dmu ) max_dmu = dmu
+       if (num_lattices == 2) then
+          dmu = abs(old_mu - ls_mu)       
+          if ( dmu < min_dmu ) min_dmu = dmu
+          if ( dmu > max_dmu ) max_dmu = dmu
 
 !!$       if ( dmu < 0.0001 ) then
 !!$          write(*,'("Warning in mc_volume            : delta mu = ",F15.6)')dmu
 !!$          write(*,'("DeltaE for this move was        : delta E  = ",F15.6)')deltaE(ls)
 !!$       end if
 
-       ! Update lattice
+       end if
+
+
 #ifdef MINU
+       ! Update active lattice
        ls = lsn
 #endif
 
@@ -1390,8 +1377,7 @@ contains
     !return
     beta  = 1.0_dp/(kB*temperature)
 
-    if ( ls == 1 ) lsn = 2
-    if ( ls == 2 ) lsn = 1
+    lsn = partner_lattice(ls)
 
 
     old_eta = eta_weight(ls_mu)
@@ -1490,8 +1476,7 @@ contains
     end if
 
     ! Define 'other' phase
-    if ( ls==1 ) lsn = 2
-    if ( ls==2 ) lsn = 1
+    lsn = partner_lattice(ls)
 
     ! Set increment
     incr = wl_factor ! default
@@ -1632,29 +1617,35 @@ contains
     max_dmu = 0.0_dp
     min_dmu = huge(1.0_dp)
 
-    ! MPI - Synchronise histogram and weights here
-    call comms_allreduce_hist(histogram,nbins)
-    call comms_allreduce_eta(weight,nbins)
 
-    if (myrank==0) then
+    if (num_lattices == 2 ) then
 
-       ! Update multicanonical weight and histogram files
-       open(unit=wgt,file='eta_weights.dat',status='replace',iostat=ierr)
-       if (ierr/=0) stop 'Error opening eta_weights.dat for output'
-       write(wgt,'("#Current energy increment = ",E20.12)')wl_factor
+       ! MPI - Synchronise histogram and weights here
+       call comms_allreduce_hist(histogram,nbins)
+       call comms_allreduce_eta(weight,nbins)
+
+       if (myrank==0) then
+
+          ! Update multicanonical weight and histogram files
+          open(unit=wgt,file='eta_weights.dat',status='replace',iostat=ierr)
+          if (ierr/=0) stop 'Error opening eta_weights.dat for output'
+          write(wgt,'("#Current energy increment = ",E20.12)')wl_factor
+          
+          open(unit=his,file='histogram.dat',status='replace',iostat=ierr)
+          write(his,'("#Current energy increment = ",E20.12)')wl_factor
        
-       open(unit=his,file='histogram.dat',status='replace',iostat=ierr)
-       write(his,'("#Current energy increment = ",E20.12)')wl_factor
+          do k=1,nbins
+             write(wgt,*)mu_bin(k),weight(k)
+             write(his,*)mu_bin(k),histogram(k)
+          end do
+          
+          close(wgt)
+          close(his)
        
-       do k=1,nbins
-          write(wgt,*)mu_bin(k),weight(k)
-          write(his,*)mu_bin(k),histogram(k)
-       end do
-       
-       close(wgt)
-       close(his)
-       
+       end if
+
     end if
+
 
   end subroutine mc_monitor_stats
 

@@ -4,16 +4,15 @@
 !=============================================================================!
 program mc_water
 
-  use constants,   only : dp,kb,hart_to_dlpol,aud_to_kgm3,water_mass,hart_to_ev,bohr_to_ang
+  use constants,   only : dp,kb,aud_to_kgm3,water_mass,hart_to_ev,bohr_to_ang
   use random,      only : random_set_random_seed,random_uniform_random,random_test_uniform
   use io,          only : io_read_input,io_write_dcd_header,io_write_dcd_snapshot,mylog,glog, &
                           io_write_rank_header,io_write_global_header,mytherm,io_write_psf
   use init,        only : read_xmol
   use comms,       only : myrank,size,comms_initialise,comms_allocate,comms_finalise, &
                           comms_bcastlog,comms_allocate
-  use userparams,  only : seedname,method,max_mc_cycles, &
-                          r_overlap,eq_mc_cycles,temperature, &
-                          list_update_int,file_output_int,nwater,leshift,input_ref_enthalpy, &
+  use userparams,  only : seedname,max_mc_cycles,eq_mc_cycles,temperature, &
+                          file_output_int,nwater,leshift,input_ref_enthalpy, &
                            traj_output_int,pressure,mc_ensemble,wl_factor,num_lattices,samplerun
   use mc_moves,    only : mc_cycle,mc_init,mc_deinit,ls_mu,ref_enthalpy,mc_checkpoint_write
   use energy,      only : model_energy,compute_model_energy,energy_init,energy_deinit

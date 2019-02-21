@@ -25,12 +25,12 @@ module util
 
     real(kind=dp) :: det
 
-    Det = Matrix(1,1)*(Matrix(2,2)*Matrix(3,3) - &
-          Matrix(2,3)*Matrix(3,2))
-    Det = Det - Matrix(1,2)*(Matrix(2,1)*Matrix(3,3) - &
-          Matrix(2,3)*Matrix(3,1))
-    Det = Det + Matrix(1,3)*(Matrix(2,1)*Matrix(3,2) - &
-          Matrix(2,2)*Matrix(3,1))
+    det = matrix(1,1)*(matrix(2,2)*matrix(3,3) - &
+          matrix(2,3)*matrix(3,2))
+    det = det - matrix(1,2)*(matrix(2,1)*matrix(3,3) - &
+          matrix(2,3)*matrix(3,1))
+    det = det + matrix(1,3)*(matrix(2,1)*matrix(3,2) - &
+          matrix(2,2)*matrix(3,1))
 
     util_determinant = det
 
@@ -77,7 +77,12 @@ module util
   end subroutine util_recipmatrix
 
   subroutine util_hmatrix_to_abc(hmatrix,alength,blength,clength,alpha,beta,gamma)
-    
+    !------------------------------------------------------------------------------!
+    ! Calculates A, B, C, alpha, beta, gamma cell lengths and angles from a matrix !
+    ! of cell vectors.                                                             !
+    !------------------------------------------------------------------------------!
+    ! D.Quigley September 2015                                                     !
+    !------------------------------------------------------------------------------!     
     implicit none
     
     real(kind=dp),dimension(3,3),intent(in) :: hmatrix

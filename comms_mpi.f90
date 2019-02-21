@@ -30,10 +30,13 @@ contains
     !=========================================================================!
     implicit none
 
-    integer :: ierr,provided
+    integer :: ierr !,provided
 
-    ! Initialise MPI - checking thread support
+    ! Initialise MPI
     call mpi_init(ierr)
+
+
+!!$    ! Initialise MPI - checking thread support
 !!$    call mpi_init_thread(MPI_THREAD_FUNNELED,provided,ierr)
 !!$    
 !!$    if (provided==MPI_THREAD_FUNNELED) then
@@ -52,7 +55,6 @@ contains
 !!$    end if
 !!$
 !!$    if (ierr.ne.MPI_SUCCESS) stop 'Error initialising MPI - exiting!'
-
 
     ! Get the size of the communicator
     call mpi_comm_size(MPI_COMM_WORLD,size,ierr)

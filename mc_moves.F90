@@ -497,7 +497,7 @@ contains
     logical :: lexist1,lexist2,lexist
     character(3)  :: rankstring
     character(29) :: dumchar29
-    real(kind=dp) :: tmp_wl_factor,tmpsum,r_new,mu_u,mu_l,dumreal,beta
+    real(kind=dp) :: tmp_wl_factor,tmpsum,r_new,mu_u,mu_l,dumreal,beta,dumreal2
 
 
     write(mylog,'("#                                                              #")')
@@ -710,7 +710,7 @@ contains
              if (ierr/=0) stop 'Error opening eta_weights.dat'
              
              read(wgt,'(A29,E20.12)')dumchar29,tmp_wl_factor
-             if (ierr/=0)then
+             if (ierr/=0) then
                 backspace(wgt)
                 read(wgt,'(A29,F20.12)',iostat=ierr)dumchar29,tmp_wl_factor
              end if
@@ -720,7 +720,8 @@ contains
              end if
              k = 1
              do 
-                read(wgt,*,end=10)dumreal,weight(k)
+                read(wgt,*,end=10)dumreal,dumreal2
+                weight(k) = dumreal2
                 k = k + 1
              end do
              
@@ -771,10 +772,7 @@ contains
        do ils = 1,num_lattices
           volume(ils) = abs(util_determinant(hmatrix(:,:,ils)))
           call util_recipmatrix(hmatrix(:,:,ils),recip_matrix(:,:,ils))
-!          call compute_kvects(ils)
           call compute_ivects(ils)
-!          call compute_rho_k(ils)
-!          call compute_expor(ils)
        end do
 
        if (num_lattices==2) call mc_check_chain_synchronisation()

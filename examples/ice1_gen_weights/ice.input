@@ -1,0 +1,65 @@
+!-----------------------------------------------------------------------------!
+! Example weights generation with multiple (MPI) walkers. Cubic vs hexagonal  !
+! ice 1 at 200K, 1 atm. Weights should converge to approximately machine      !
+! precision in a few hours.                                                   !
+!-----------------------------------------------------------------------------!
+! D.Quigley - University of Warwick                                           !
+!-----------------------------------------------------------------------------!
+
+!------------------------!
+!  Model Parameters      !
+!------------------------!
+&potential
+model_type = "mW"
+/
+
+!-------------------------!
+!   Thermal Parameters    !
+!-------------------------!
+&thermal
+temperature = 200             ! Temperature in Kelvin
+pressure    = 1.0             ! Pressure in atmospheres
+/
+
+!-------------------------!
+!  MC Parameters          !
+!-------------------------!
+&MonteCarlo
+mc_ensemble      = 'npt'      ! Ensemble
+mc_max_trans     = 1.1        ! Maximum c.o.m. translation in Ang
+mc_dv_max        = 0.924      ! Max volume change
+mc_target_ratio  = 0.5        ! Target acceptance ratio for MC moves
+nbins            = 101     
+mu_max           = +400
+mu_min           = -400
+wl_factor        = 0.005      ! Initial increment (in kT) for weight function
+wl_flattol       = 0.05       ! All bins must be within this fraction of the mean
+mc_always_switch = .true.     ! Attempt lattice-switch after every other move
+eta_interp       = .true.     ! Interpolate weights between mid-bin values
+samplerun        = .false.    ! Fix weights, no equilibration period
+/
+
+!-------------------------!
+! Configuration           !
+!-------------------------!
+&config
+nwater    = 48                ! Number of water molecules
+method    = 'xmol'            ! Random or file (input.xmol)
+ls        = 1                 ! Initially active lattice
+/
+
+!-------------------------!
+! Bookkeeping             !
+!-------------------------!
+&bookkeeping
+list_update_int  = 10         ! Update Verlet list at this interval
+traj_output_int  = 100000     ! Dump trajectories at this interval
+file_output_int  = 50         ! Sample data at this interval
+max_mc_cycles    = 20000000   ! Total number of MC cycles to perform
+eq_mc_cycles     = 10000      ! Number of equilibration cycles
+eq_adjust_mc     = .true.     ! Auto tune mc parameters in equilibration
+timer_qtime      = 172800     ! Maximum walltime to run before stopping
+timer_closetime  = 1800       ! Time taken to stop cleanly
+/
+
+

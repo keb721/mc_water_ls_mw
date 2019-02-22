@@ -40,7 +40,7 @@ module userparams
   logical,save       :: samplerun    = .false.           ! sampling run with constant eta
   logical,save       :: leshift      = .false.           ! shift by reference energy config and correct in output
 
-  integer,save       :: nbins = 200                      ! number of bins to use
+  integer,save       :: nbins = 201                      ! number of bins to use
   real(kind=dp),save :: mu_min = -8000.0_dp              ! minimum overlap parameter
   real(kind=dp),save :: mu_max = +8000.0_dp              ! maximum overlap parameter
 

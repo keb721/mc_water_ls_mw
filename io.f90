@@ -64,7 +64,7 @@ contains
     !------------------------------------------------------------------------------!
     use constants, only : ang_to_bohr
     use comms,     only : myrank,comms_bcastint,comms_bcastchar,comms_bcastreal, &
-         comms_bcastlog
+         comms_bcastlog,size
     use model,     only : ls
     use userparams
     use energy
@@ -98,6 +98,8 @@ contains
     namelist/bookkeeping/list_update_int,traj_output_int,file_output_int,latt_sync_int,mpi_sync_int, &
          chkpt_dump_int,monitor_int,flat_chk_int,invt_dump_int,eq_adjust_mc,deltaG_int, &
          max_mc_cycles,eq_mc_cycles,timer_qtime,timer_closetime
+
+    namelist/parallelisation/parallel_strategy,window_overlap
 
        
     
@@ -230,6 +232,15 @@ contains
        if ( max_mc_cycles   < 1 ) stop 'Error - max_mc_cycles must be   > 0 '
        if ( eq_mc_cycles    < 1 ) stop 'Error - eq_mc_cycles must be    > 0'
 
+       !-------------------------!
+       ! Parallelisation         !
+       !-------------------------!
+       read(inp,nml=parallelisation,iostat=ierr)
+       if ((ierr/=0).and.(size>1)) then
+          !write(0,'("Parallelisation namelist missing or contains invalid entries")')
+          write(0,'("Using default multi-walker parallelisation.")')
+       end if
+
        close(inp)
 
     end if
@@ -304,6 +315,9 @@ contains
     call comms_bcastint(sw_p,1)
     call comms_bcastint(sw_q,1)
     call comms_bcastreal(cos0,1)
+
+    call comms_bcastchar(parallel_strategy,2)
+    call comms_bcastint(window_overlap,1)
     
     return
 

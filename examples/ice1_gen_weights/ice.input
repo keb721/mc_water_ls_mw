@@ -29,14 +29,14 @@ mc_ensemble      = 'npt'      ! Ensemble
 mc_max_trans     = 1.1        ! Maximum c.o.m. translation in Ang
 mc_dv_max        = 0.924      ! Max volume change
 mc_target_ratio  = 0.5        ! Target acceptance ratio for MC moves
-nbins            = 101     
-mu_max           = +400
-mu_min           = -400
+nbins            = 101        ! Number of bins 
+mu_max           = +400       ! Maximum value of overlap parameter
+mu_min           = -400       ! Minimum value of overlap parameter
 wl_factor        = 0.005      ! Initial increment (in kT) for weight function
 wl_flattol       = 0.05       ! All bins must be within this fraction of the mean
 mc_always_switch = .true.     ! Attempt lattice-switch after every other move
 eta_interp       = .true.     ! Interpolate weights between mid-bin values
-samplerun        = .false.    ! Fix weights, no equilibration period
+samplerun        = .false.    ! Do not fix the weights. Refine iteratively
 /
 
 !-------------------------!

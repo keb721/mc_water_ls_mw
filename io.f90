@@ -240,6 +240,7 @@ contains
           !write(0,'("Parallelisation namelist missing or contains invalid entries")')
           write(0,'("Using default multi-walker parallelisation.")')
        end if
+       if (size==1) window_overlap=0
 
        close(inp)
 

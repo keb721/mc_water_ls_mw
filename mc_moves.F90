@@ -64,9 +64,12 @@ module mc_moves
 
   real(kind=dp),allocatable,dimension(:),save   :: histogram
   real(kind=dp),allocatable,dimension(:),save   :: weight
+  real(kind=dp),allocatable,dimension(:),save   :: unbiased_hist
   real(kind=dp),allocatable,dimension(:),save   :: mu_bin
   real(kind=dp),allocatable,dimension(:),save   :: binwidth
   real(kind=dp) :: av_binwidth
+  real(kind=dp) :: log_unbiased_norm
+  
   
   ! variables controlling the non-uniform bin-grid
   real(kind=dp),save :: a_pos,a_neg  ! Initial value of GPs
@@ -96,6 +99,7 @@ module mc_moves
   integer,parameter :: wgt = 63    ! multicanonical weights
   integer,parameter :: wlf = 64    ! record of f values
   integer,parameter :: chk = 65    ! checkpoint file
+  
 
   ! Lookup list for "other" lattice
   integer,dimension(2) :: partner_lattice
@@ -103,6 +107,9 @@ module mc_moves
   ! Local (per MPI rank) domain variables
   real(kind=dp),save :: my_mu_max, my_mu_min
   integer,save :: my_start_bin, my_end_bin
+
+  ! Has the walker on this MPI rank reached its window
+  logical,save :: walker_in_window = .false.
 
 
 contains
@@ -115,14 +122,15 @@ contains
     ! D.Quigley January 2007                                                       !
     !           Februray 2019 : Updated for domain decomposition option.           !
     !------------------------------------------------------------------------------!
-    use comms,      only : comms_allreduce_eta,comms_allreduce_hist,myrank,size
+    use comms,      only : comms_allreduce_eta,comms_allreduce_hist, &
+                           comms_allreduce_uhist,myrank,size
     use random,     only : random_uniform_random
     use userparams, only : nwater,mc_ensemble,nbins,allow_switch,  &
          allow_vol,allow_trans,pressure,num_lattices, &
          mc_always_switch,mc_trans_prob,mc_vol_prob,mc_switch_prob, &
          deltaG_int,chkpt_dump_int,list_update_int, &
          flat_chk_int,latt_sync_int,monitor_int,mpi_sync_int, &
-         parallel_strategy, eq_mc_cycles
+         parallel_strategy, eq_mc_cycles, samplerun
     use model,      only : volume
     use util,       only : util_determinant,util_recipmatrix
     use energy
@@ -171,14 +179,16 @@ contains
     ! Sanity check on equilibration       !
     !-------------------------------------!
     if (parallel_strategy == 'dd') then      
-       if (mc_cycle_num == eq_mc_cycles) then
+
+       if (mc_cycle_num < eq_mc_cycles) then
+          
+          walker_in_window = ( ( ls_mu > my_mu_min ) .and. ( ls_mu < my_mu_max ) )
+
+       else if (mc_cycle_num == eq_mc_cycles) then
 
           ! Check that the walker on this MPI task has made its way into 
           ! its window. Otherwise we've got a problem and need to abort.
-          in_window = ( ( ls_mu > my_mu_min ) .and. ( ls_mu < my_mu_max ) )
-          !call comms_logical_and(in_window) ! TODO
-          
-          if ( .not. in_window) then
+          if ( .not. walker_in_window) then
              write(0,'("Error : Not all walkers have reached their designated window ")')
              write(0,'("        after ",I10," MC cycles.")')eq_mc_cycles
              write(0,*)
@@ -189,7 +199,14 @@ contains
              end do
              stop
           end if
+
+       else
+
+          ! This must be a restart
+          walker_in_window = .true.
+
        end if
+
     end if
 
 
@@ -248,8 +265,10 @@ contains
              ! Construct global histogram as sum over individual walker histograms
              call comms_allreduce_eta(weight,nbins)
              call comms_allreduce_hist(histogram,nbins)
+             if (samplerun) call comms_allreduce_uhist(unbiased_hist,nbins)
+
           elseif (parallel_strategy=='dd') then
-             ! Build global histogram from individual windows
+             ! Build global histogram from individual windows ?
 
           endif
 
@@ -282,8 +301,8 @@ contains
        
        if (mod(mc_cycle_num,deltaG_int)==0) then
           !       write(mylog,'(" DEBUG - computing delta G at cycle ",I10)')mc_cycle_num
-          call mc_compute_deltaG_from_eta()
-          call mc_compute_deltaG_from_hist()
+          !call mc_compute_deltaG_from_eta()
+          if (samplerun) call mc_compute_deltaG_from_hist()
        end if
 
     end if
@@ -310,7 +329,7 @@ contains
     ! D.Quigley January 2007                                                       !
     !------------------------------------------------------------------------------!
     use comms,      only : myrank,comms_barrier
-    use userparams, only : nbins,mc_max_trans,wl_factor,nwater,mc_dv_max
+    use userparams, only : nbins,mc_max_trans,wl_factor,nwater,mc_dv_max,samplerun
     use model,      only : hmatrix,ljr,ref_ljr,ls
     implicit none
     integer :: i,ierr
@@ -345,6 +364,8 @@ contains
     write(chk)(weight(i),i=1,nbins)
     write(chk)wl_invt_active
 
+    if (samplerun) write(chk)(unbiased_hist(i),i=1,nbins)
+
     ! write cell data
     write(chk)hmatrix
 
@@ -375,9 +396,11 @@ contains
     !------------------------------------------------------------------------------!
     ! D.Quigley January 2007                                                       !
     !------------------------------------------------------------------------------!
-    use comms,      only : myrank,comms_set_histogram,comms_bcastint
+    use comms,      only : myrank,comms_set_histogram,comms_bcastint, &
+                           comms_allreduce_uhist,comms_set_uhistogram
     use io,         only : mylog
-    use userparams, only : nbins,mc_max_trans,wl_factor,mc_dv_max
+    use userparams, only : nbins,mc_max_trans,wl_factor,mc_dv_max,samplerun, &
+                           parallel_strategy
     use model,      only : hmatrix,ljr,ref_ljr,ls
 
     implicit none
@@ -440,9 +463,14 @@ contains
     read(chk+fnu)(weight(i),i=1,nbins)
     read(chk+fnu)wl_invt_active
 
+    if (samplerun) read(chk+fnu)(unbiased_hist(i),i=1,nbins)
+
     ! Make sure the comms module knows what's going on
-    call comms_set_histogram(histogram,nbins)
-   
+    if (parallel_strategy=='mw') then
+       call comms_set_histogram(histogram,nbins)
+       if (samplerun) call comms_set_uhistogram(unbiased_hist,nbins)
+    end if
+
     ! compute sum over all histogram bins
     sumhist = real(sum(histogram),kind=dp)
 
@@ -488,7 +516,8 @@ contains
     use energy,    only : model_energy,compute_model_energy,compute_ivects
     use userparams,only : temperature,pressure,nbins,wl_factor, &
                           nwater,mu_max,mu_min,num_lattices,leshift, &
-                          parallel_strategy, window_overlap
+                          parallel_strategy, window_overlap,max_mc_cycles, &
+                          eq_mc_cycles,samplerun
     use util,      only : util_determinant,util_recipmatrix
     implicit none
     integer,intent(out) :: outcycle ! pass first cycle num back up to caller
@@ -498,7 +527,7 @@ contains
     character(3)  :: rankstring
     character(29) :: dumchar29
     real(kind=dp) :: tmp_wl_factor,tmpsum,r_new,mu_u,mu_l,dumreal,beta,dumreal2
-
+    real(kind=dp) :: hits_per_bin,unbiased_norm,incr
 
     write(mylog,'("#                                                              #")')
     write(mylog,'("# Initialising Monte-Carlo calculation                         #")')
@@ -527,12 +556,16 @@ contains
     ! is odd
     if (mod(nbins,2)==0) nbins = nbins + 1
 
-    allocate(mu_bin(1:nbins)    ,stat=ierr)
-    allocate(binwidth(1:nbins)  ,stat=ierr)
-    allocate(weight(1:nbins)    ,stat=ierr)  
-    allocate(histogram(1:nbins) ,stat=ierr)
+    allocate(mu_bin(1:nbins)       ,stat=ierr)
+    allocate(binwidth(1:nbins)     ,stat=ierr)
+    allocate(weight(1:nbins)       ,stat=ierr)  
+    allocate(histogram(1:nbins)    ,stat=ierr)
+    allocate(unbiased_hist(1:nbins),stat=ierr)
     weight = 0.0_dp
     histogram = 0.0_dp
+
+    ! Unbiased_hist 
+    unbiased_hist = 0.0_dp
 
     ! Initialise geometric series of grid spacings
     s_pos = abs(mu_max) - 0.5_dp
@@ -630,32 +663,38 @@ contains
           bins_per_window = nbins/size 
 
           if (myrank==0) then
+
              my_start_bin = 1
              my_end_bin   = bins_per_window + window_overlap
 
              my_mu_min = mu_min
-             my_mu_max = sum(binwidth(1:my_end_bin))
+             my_mu_max = mu_min+sum(binwidth(1:my_end_bin))
 
           end if
 
-          do irank = 1,size-2
-             if (irank==myrank) then
+          if (size > 1) then
 
-                my_start_bin = irank * bins_per_window - window_overlap
-                my_end_bin   = irank * bins_per_window + window_overlap
-
-                my_mu_min = sum(binwidth(1:my_start_bin-1))
-                my_mu_max = sum(binwidth(1:my_end_bin))
-
+             do irank = 1,size-2
+                if (irank==myrank) then
+                   
+                   my_start_bin = irank * bins_per_window - window_overlap
+                   my_end_bin   = (irank+1) * bins_per_window + window_overlap
+                   
+                   my_mu_min = mu_min+sum(binwidth(1:my_start_bin-1))
+                   my_mu_max = mu_min+sum(binwidth(1:my_end_bin))
+                
+                end if
+             end do
+             
+             if (myrank==size-1) then
+                
+                my_start_bin = myrank * bins_per_window - window_overlap
+                my_end_bin = nbins             
+                
+                my_mu_min = mu_min+sum(binwidth(1:my_start_bin-1))
+                my_mu_max = mu_max
+                
              end if
-          end do
-
-          if (myrank==size-1) then
-             my_start_bin = myrank * bins_per_window - window_overlap
-             my_end_bin = nbins             
-
-             my_mu_min = sum(binwidth(1:my_start_bin-1))
-             my_mu_max = mu_max
 
           end if
 
@@ -664,9 +703,9 @@ contains
           if (my_mu_min > 0.0_dp) ls = 2
 
           write(mylog,'("#                                                              #")')
-          write(mylog,'("# This rank will use bin ",I6," to ",I6,"                   #")')my_start_bin,my_end_bin
-          write(mylog,'("# Lower limit of mu: ",E12.6,"                              #")')my_mu_min
-          write(mylog,'("# Upper limit of mu: ",E12.6,"                              #")')my_mu_max
+          write(mylog,'("# This rank will use bin ",I6," to ",I6,"                      #")')my_start_bin,my_end_bin
+          write(mylog,'("# Lower limit of mu: ",F12.6,"                              #")')my_mu_min
+          write(mylog,'("# Upper limit of mu: ",F12.6,"                              #")')my_mu_max
           write(mylog,'("#                                                              #")')
 
        case('mw')
@@ -717,6 +756,7 @@ contains
              
              if ( tmp_wl_factor > 1e-10 ) then
                 wl_factor = min(wl_factor,tmp_wl_factor)
+                if (samplerun) wl_factor = 0.0_dp
              end if
              k = 1
              do 
@@ -734,6 +774,36 @@ contains
        ! MPI - make sure everyone has the same weights
        call comms_bcastreal(wl_factor,1)
        call comms_allreduce_eta(weight,nbins)
+
+       ! Estimate the sum over unbiased counts in all bins in a fashion
+       ! which is resistant to overflow. For use later when incrementing
+       ! unbiased histogram.
+       hits_per_bin = real(max_mc_cycles,kind=dp)-real(eq_mc_cycles,kind=dp)
+       hits_per_bin = hits_per_bin*real(size*nwater,kind=dp)/real(nbins,kind=dp)
+
+       ! First bin
+       incr = hits_per_bin*av_binwidth
+
+       ! log of expected first bin hits when 
+       !                 = log(incr*exp(eta_weight(mu_bin(1))
+       log_unbiased_norm = log(incr) + weight(1)
+
+
+       do k = 2,nbins
+
+          incr = hits_per_bin*av_binwidth
+
+          if ( log_unbiased_norm > weight(k) + log(incr) ) then
+             ! Use log(a) --> log(a+b) = log(a) + log(1+b/a)
+             log_unbiased_norm = log_unbiased_norm + &
+                  log(1.0_dp+incr*exp(weight(k)-log_unbiased_norm))             
+          else
+             ! Use log(a) --> log(a+b) = log(b) + log(1+a/b)
+             log_unbiased_norm = log(incr) + weight(k) + &
+                  log(1.0_dp+exp(log_unbiased_norm-weight(k))/incr)
+          end if
+
+       end do
 
        if (parallel_strategy=='dd') then
 
@@ -798,6 +868,9 @@ contains
        partner_lattice = (/1,1/)
     end if
 
+    ! all walkers are in window if not domain decomposed
+    if (parallel_strategy/='dd') walker_in_window=.true.
+
 
     return
 
@@ -808,7 +881,7 @@ contains
     implicit none
     integer :: ierr
 
-    deallocate(weight,histogram,binwidth,mu_bin,stat=ierr)
+    deallocate(weight,histogram,binwidth,mu_bin,unbiased_hist,stat=ierr)
     deallocate(backup_local_real_energy)
 
     if (ierr/=0) stop 'Error releasing memory in mc module.'
@@ -824,13 +897,20 @@ contains
     !------------------------------------------------------------------------------!
     ! D.Quigley September 2006                                                     !
     !------------------------------------------------------------------------------!
-    use userparams, only : nbins,eta_interp
+    use userparams, only : nbins,eta_interp,eq_mc_cycles
     implicit none
    
     real(kind=dp),intent(in) :: mu_in
     integer             :: k
 
     real(kind=dp) :: gradient
+
+
+    ! Never apply any weight during equilibration?
+    !if (mc_cycle_num < eq_mc_cycles) return
+
+    ! TODO - don't want to penalise walkers for not having reached their window yet
+    if (.not.walker_in_window) return
 
     if (mu_in < my_mu_min ) then 
        eta_weight = huge(1.0_dp)
@@ -846,15 +926,15 @@ contains
 
     if (eta_interp) then
 
-       if (k==1) then ! first bin special case
+       if (k==my_start_bin) then ! first bin special case
 
-          gradient = 2.0_dp*(weight(2)-weight(1))/(binwidth(1)+binwidth(2))
-          eta_weight = weight(1) + (mu_in-mu_bin(1))*gradient
+          gradient = 2.0_dp*(weight(k+1)-weight(k))/ (binwidth(k)+binwidth(k+1))
+          eta_weight = weight(k) + (mu_in-mu_bin(k))*gradient
           
-       elseif (k==nbins) then ! last bin special case
+       elseif (k==my_end_bin) then ! last bin special case
        
-          gradient = 2.0_dp*(weight(nbins)-weight(nbins-1))/(binwidth(nbins)+binwidth(nbins-1))
-          eta_weight = weight(nbins) + (mu_in-mu_bin(nbins))*gradient
+          gradient = 2.0_dp*(weight(k)-weight(k-1))/(binwidth(k)+binwidth(k-1))
+          eta_weight = weight(k) + (mu_in-mu_bin(k))*gradient
 
        else
 
@@ -1540,8 +1620,16 @@ contains
 
     histogram(k)  = histogram(k)  + av_binwidth/binwidth(k)
 
-    ! Go no further if this is a sampling run
-    if (samplerun) return
+    ! If this is a sample run then also accumulate an unbiased histogram
+    ! but then stop and do nothing to the weights
+    if (samplerun) then
+
+       incr = av_binwidth/binwidth(k)
+       unbiased_hist(k) = unbiased_hist(k) + incr*exp(eta_weight(ls_mu)-log_unbiased_norm)
+       !write(0,*)incr*exp(eta_weight(ls_mu)),incr*exp(eta_weight(ls_mu)-log_unbiased_norm)
+       return
+
+    end if
 
     ! Use Adam Swetnam's method for computing the optimal wl_factor
     ! based on the current state of the histogram.
@@ -1588,14 +1676,11 @@ contains
 !!$       incr = max(incr,wl_factor)
 !!$    end if
 
-    ! TODO update this for parallel_strategy='dd'
-    ! minbin should be lowest non-zero entry in window
-
     ! Increment the current bin only
     weight(k)  = weight(k)  + av_binwidth*incr/binwidth(k)
 
-    minbin = weight(nbins/2+1)
-    do i = 1,nbins
+    minbin = minval(weight(my_start_bin:my_end_bin),1)
+    do i = my_start_bin,my_end_bin
        weight(i) = weight(i) - minbin
     end do
 
@@ -1611,19 +1696,28 @@ contains
     !------------------------------------------------------------------------------------!
     ! D.Quigley July 2010                                                                !
     !------------------------------------------------------------------------------------!
-    use comms,      only : myrank,comms_allreduce_hist,comms_allreduce_eta
+    use comms,      only : myrank,comms_allreduce_hist,comms_allreduce_eta, &
+                           comms_join_eta, comms_get_max,comms_allreduce_uhist, &
+                           comms_join_uhist
     use io,         only : mylog
     use constants,  only : bohr_to_ang,kb,hart_to_ev
     use userparams, only : eq_adjust_mc,mc_max_trans,mc_dv_max, &
                            mc_target_ratio,mc_ensemble,nwater,temperature,nbins, &
-                           mu_min,mu_max,wl_factor,allow_trans, &
-                           allow_switch,eq_mc_cycles,monitor_int,num_lattices
+                           mu_min,mu_max,wl_factor,allow_trans, parallel_strategy, &
+                           allow_switch,eq_mc_cycles,monitor_int,num_lattices, &
+                           window_overlap,samplerun
     use energy,     only : model_energy,compute_model_energy
     implicit none
 
-    real(kind=dp)              :: atr,avr,alr
+    real(kind=dp)              :: atr,avr,alr,max_wl_factor
     real(kind=dp),dimension(2) :: orig_energy
     integer                    :: ierr,k,ils
+
+    real(kind=dp),allocatable,dimension(:) :: joined
+
+    character(19) :: wgtstring
+    character(17) :: hisstring
+    character(26) :: ubhstring
 
     ! Compute acceptance ratios for each move type
     atr = real(mc_accepted_rsteps,kind=dp)/real(mc_attempted_rsteps,kind=dp)
@@ -1718,28 +1812,120 @@ contains
 
     if (num_lattices == 2 ) then
 
-       ! MPI - Synchronise histogram and weights here
-       call comms_allreduce_hist(histogram,nbins)
-       call comms_allreduce_eta(weight,nbins)
+       if ( parallel_strategy == 'mw' ) then
 
-       if (myrank==0) then
+          ! MPI - Synchronise histogram and weights here
+          call comms_allreduce_hist(histogram,nbins)
+          call comms_allreduce_eta(weight,nbins)
 
-          ! Update multicanonical weight and histogram files
-          open(unit=wgt,file='eta_weights.dat',status='replace',iostat=ierr)
-          if (ierr/=0) stop 'Error opening eta_weights.dat for output'
-          write(wgt,'("#Current energy increment = ",E20.12)')wl_factor
+          if (samplerun) call comms_allreduce_uhist(unbiased_hist,nbins)
+
+          if (myrank==0) then
+
+             ! Update multicanonical weight and histogram files
+             if (.not.samplerun) then
+                open(unit=wgt,file='eta_weights.dat',status='replace',iostat=ierr)
+                if (ierr/=0) stop 'Error opening eta_weights.dat for output'
+                write(wgt,'("#Current energy increment = ",E20.12)')wl_factor
+             end if
+
+             open(unit=his,file='histogram.dat',status='replace',iostat=ierr)
+             write(his,'("#Current energy increment = ",E20.12)')wl_factor
+
+             open(unit=ubh,file='unbiased_histogram.dat',status='replace',iostat=ierr)
+             write(his,'("#Current energy increment = ",E20.12)')wl_factor
+
+             
+             do k=1,nbins
+                if(.not.samplerun) write(wgt,*)mu_bin(k),weight(k)
+                write(his,*)mu_bin(k),histogram(k)
+                write(ubh,*)mu_bin(k),unbiased_hist(k)
+             end do
+             
+             if (.not.samplerun) close(wgt)
+             close(his)
+             close(ubh)
+             
+          end if
           
-          open(unit=his,file='histogram.dat',status='replace',iostat=ierr)
+       else if (parallel_strategy == 'dd') then
+          
+          ! Write local weights to seperate files
+          write(wgtstring,'("eta_weights_",I3.3,".dat")')myrank
+          open(unit=wgt,file=wgtstring,status='replace',iostat=ierr)
+          if (ierr/=0) stop 'Error opening weights file for output'
+          write(wgt,'("#Current energy increment = ",E20.12)')wl_factor          
+
+          write(hisstring,'("histogram_",I3.3,".dat")')myrank
+          open(unit=his,file=hisstring,status='replace',iostat=ierr)
+          if (ierr/=0) stop 'Error opening histogram file for output'
           write(his,'("#Current energy increment = ",E20.12)')wl_factor
-       
-          do k=1,nbins
+
+          write(ubhstring,'("unbiased_histogram_",I3.3,".dat")')myrank
+          open(unit=ubh,file=ubhstring,status='replace',iostat=ierr)
+          if (ierr/=0) stop 'Error opening unbiased histogram file for output'
+          write(ubh,'("#Current energy increment = ",E20.12)')wl_factor
+
+
+          do k=my_start_bin, my_end_bin
              write(wgt,*)mu_bin(k),weight(k)
              write(his,*)mu_bin(k),histogram(k)
-          end do
-          
+             write(ubh,*)mu_bin(k),unbiased_hist(k)
+          end do          
+
           close(wgt)
           close(his)
-       
+          close(ubh)
+
+          ! Fit all the windows together
+          allocate(joined(1:nbins),stat=ierr)
+          if (ierr/=0) stop 'Error in mc_monitor_stats - could not allocate joined weights'
+          call comms_join_eta(weight,nbins,window_overlap,joined)
+
+          ! Should write the maximum wl_factor over all ranks here?
+          call comms_get_max(wl_factor,max_wl_factor)
+
+          if (myrank==0) then
+             
+             open(unit=wgt,file='eta_weights.dat',status='replace',iostat=ierr)
+             if (ierr/=0) stop 'Error opening eta_weights.dat for output'
+             write(wgt,'("#Current energy increment = ",E20.12)')max_wl_factor
+
+             do k=1,nbins
+                write(wgt,*)mu_bin(k),joined(k)
+             end do
+             
+             close(wgt)
+
+          end if
+
+          ! Also join the unbiased histogram
+          if (samplerun) then
+
+             call comms_join_uhist(unbiased_hist,nbins,window_overlap,joined)
+             
+             if (myrank==0) then
+
+                open(unit=ubh,file='unbiased_histogram.dat',status='replace',iostat=ierr)
+                if (ierr/=0) stop 'Error opening unbiased_histogram.dat for output'
+                write(ubh,'("#Current energy increment = ",E20.12)')0.0
+                
+                do k=1,nbins
+                   write(ubh,*)mu_bin(k),joined(k)
+                end do
+                
+                close(ubh)
+
+             end if
+
+          end if
+
+          deallocate(joined,stat=ierr)
+          if (ierr/=0) stop 'Error deallocating joined weights'
+
+       else
+          ! Uknown parallelisation
+          stop 'Unknown parallel_strategy in mc_monitor_stats'
        end if
 
     end if
@@ -1756,10 +1942,11 @@ contains
     !--------------------------------------------------------!
     use comms,      only : myrank,comms_allreduce_hist, &
                            comms_set_histogram,comms_bcastlog
-    use io,         only : glog
+    use io,         only : glog,mylog
     use userparams, only : wl_schedule,nbins,wl_flattol, &
                            wl_minhist,wl_factor,wl_swetnam, &
-                           nwater,wl_useinvt,samplerun,invt_dump_int
+                           nwater,wl_useinvt,samplerun,invt_dump_int, &
+                           parallel_strategy
     implicit none
 
     character(20) :: wlstring
@@ -1775,7 +1962,9 @@ contains
     if (samplerun.or.(sum(histogram)<tiny(1.0_dp))) return
 
     ! MPI - synchronise histogram
-    call comms_allreduce_hist(histogram,nbins)
+    if (parallel_strategy=='mw') then ! multiple walkers
+       call comms_allreduce_hist(histogram,nbins)
+    end if
 
     ! If the Wang-Landau f has never been modified
     ! reset the histogram once we've visited every
@@ -1793,21 +1982,36 @@ contains
     ! Compute mean histogram value
     av = 0.0_dp
     count = 0
-    do k = 1,nbins 
+    do k = my_start_bin,my_end_bin 
        av = av + real(histogram(k),kind=dp)
        count = count + 1
     end do
     av = av / real(count,kind=dp)
 
-          
-    if (myrank==0) then
-    write(glog,'("# Checking flatness of histogram at cycle ",I10,"           #")')mc_cycle_num
-    write(glog,'("# --------------------------------------------------           #")')   
-    write(glog,'("#                                                              #")')   
-    write(glog,'("# Most  populated histogram bin = ",F10.4," % of mean         #")')100.0_dp*maxval(histogram,1)/av
-    write(glog,'("# Least populated histogram bin = ",F10.4," % of mean         #")')100.0_dp*minval(histogram,1)/av
-    write(glog,'("#                                                              #")')   
+    if (parallel_strategy=='mw') then
+
+       if (myrank==0) then
+          write(glog,'("# Checking flatness of histogram at cycle ",I10,"           #")')mc_cycle_num
+          write(glog,'("# --------------------------------------------------           #")')   
+          write(glog,'("#                                                              #")')   
+          write(glog,'("# Most  populated histogram bin = ",F10.4," % of mean         #")')100.0_dp*maxval(histogram,1)/av
+          write(glog,'("# Least populated histogram bin = ",F10.4," % of mean         #")')100.0_dp*minval(histogram,1)/av
+          write(glog,'("#                                                              #")')   
+       end if
+
+    elseif (parallel_strategy=='dd') then
+
+          write(mylog,'("# Checking flatness of histogram at cycle ",I10,"           #")')mc_cycle_num
+          write(mylog,'("# --------------------------------------------------           #")')   
+          write(mylog,'("#                                                              #")')   
+          write(mylog,'("# Most  populated histogram bin = ",F10.4," % of mean         #")')100.0_dp*maxval(histogram,1)/av
+          write(mylog,'("# Least populated histogram bin = ",F10.4," % of mean         #")')100.0_dp*minval(histogram,1)/av
+          write(mylog,'("#                                                              #")')   
+
+
     end if
+
+
 
     ! Using standard Wang-Landau with f only updated
     ! every time the histogram is flat.
@@ -1822,7 +2026,7 @@ contains
           ! Flatness criterion is that all histogram bins
           ! must be within 100*wl_flattol % of the mean.
           flat = .true.
-          do k = 1,nbins 
+          do k = my_start_bin,my_end_bin 
              if (abs(real(histogram(k),kind=dp) - av)/av > wl_flattol ) flat=.false.
           end do
 
@@ -1830,7 +2034,7 @@ contains
           
           ! Flatness criterion is that all histogram bins
           ! must have been visited wl_minhist times.
-          mini = nint(minval(histogram))
+          mini = nint(minval(histogram(my_start_bin:my_end_bin)))
           flat = .true.
           if ( mini<wl_minhist ) flat=.false.
           
@@ -1839,7 +2043,7 @@ contains
           ! Flatness criterion is that all histogram bins
           ! must be above 100*wl_flattol % of the mean.
           flat = .true.
-          do k = 1,nbins 
+          do k = my_start_bin,my_end_bin 
              if ( real(histogram(k),kind=dp) < (1.0_dp-wl_flattol)*av ) flat=.false.
           end do
 
@@ -1848,62 +2052,83 @@ contains
        end if
        
        ! Make sure everyone agrees that the histogram is flat
-       call comms_bcastlog(flat,1)
+       if (parallel_strategy=='mw') call comms_bcastlog(flat,1)
 
 
        if (flat) then
           
-          ! Shift everything down such that minimum is at zero. 
-          av = weight(nbins/2+1)
-          do k = 1,nbins
-             weight(k) = weight(k) - av
-          end do
-          
-          if (myrank==0) then
-             
-             inquire(file='wlf.dat',exist=lexist)
-             if (.not.lexist.or.firstcycle) then
-                ! Open a new file 
-                open(unit=wlf,file='wlf.dat',status='replace',iostat=ierr)
-             else
-                ! Append to existing file
-                open(unit=wlf,file='wlf.dat',status='old',position='append',iostat=ierr)
-             end if
-             if (ierr/=0) stop 'Error opening wlf.dat'
-             
-             write(wlf,'(I10,E20.12)')mc_cycle_num,wl_factor
-             write(wlf,'(I10,E20.12)')mc_cycle_num,0.5_dp*wl_factor
-             close(wlf)
-             
-             ! Write histogram and weights tagged with the current f
-             write(wlstring,'(F20.12)')wl_factor
-          
-             open(unit=wgt,file="eta_weights.dat_"//adjustl(wlstring),status='replace',iostat=ierr)
-             if (ierr/=0) stop 'Error opening eta_weights.dat for output'
-             write(wgt,'("#Current energy increment = ",E20.12)')wl_factor
-             
-             open(unit=his,file="histogram.dat_"//adjustl(wlstring),status='replace',iostat=ierr)
-             if (ierr/=0) stop 'Error opening histogram.dat for output'
-             write(his,'("#Current energy increment = ",E20.12)')wl_factor
-             
-             do k=1,nbins
-                write(wgt,*)mu_bin(k),weight(k)
-                write(his,*)mu_bin(k),histogram(k)
-             end do
-             close(wgt)
-             close(his)
-            
-          end if ! end if myrank==0
- 
-          ! Reset histogram and update wl_factor
-          histogram = 0.0_dp
-          call comms_set_histogram(histogram,nbins)
-          wl_factor = wl_factor*0.5_dp
-          if (myrank==0) write(glog,'("#                                                              #")') 
-          if (myrank==0) write(glog,'("# Flatness criterion satisfied - updating wl_factor            #")')
-          if (myrank==0) write(glog,'("#                                                              #")') 
+          if (parallel_strategy=='mw') then
 
-          firstcycle = .false.
+             ! Shift everything down such that minimum is at zero. 
+             av = weight(nbins/2+1)
+             do k = 1,nbins
+                weight(k) = weight(k) - av
+             end do
+          
+             if (myrank==0) then
+             
+                inquire(file='wlf.dat',exist=lexist)
+                if (.not.lexist.or.firstcycle) then
+                   ! Open a new file 
+                   open(unit=wlf,file='wlf.dat',status='replace',iostat=ierr)
+                else
+                   ! Append to existing file
+                   open(unit=wlf,file='wlf.dat',status='old',position='append',iostat=ierr)
+                end if
+                if (ierr/=0) stop 'Error opening wlf.dat'
+                
+                write(wlf,'(I10,E20.12)')mc_cycle_num,wl_factor
+                write(wlf,'(I10,E20.12)')mc_cycle_num,0.5_dp*wl_factor
+                close(wlf)
+                
+                ! Write histogram and weights tagged with the current f
+                write(wlstring,'(F20.12)')wl_factor
+                
+                open(unit=wgt,file="eta_weights.dat_"//adjustl(wlstring),status='replace',iostat=ierr)
+                if (ierr/=0) stop 'Error opening eta_weights.dat for output'
+                write(wgt,'("#Current energy increment = ",E20.12)')wl_factor
+                
+                open(unit=his,file="histogram.dat_"//adjustl(wlstring),status='replace',iostat=ierr)
+                if (ierr/=0) stop 'Error opening histogram.dat for output'
+                write(his,'("#Current energy increment = ",E20.12)')wl_factor
+                
+                do k=1,nbins
+                   write(wgt,*)mu_bin(k),weight(k)
+                   write(his,*)mu_bin(k),histogram(k)
+                end do
+                close(wgt)
+                close(his)
+                
+             end if ! end if myrank==0
+             
+             ! Reset histogram and update wl_factor
+             histogram = 0.0_dp
+             call comms_set_histogram(histogram,nbins)
+             wl_factor = wl_factor*0.5_dp
+             if (myrank==0) write(glog,'("#                                                              #")') 
+             if (myrank==0) write(glog,'("# Flatness criterion satisfied - updating wl_factor            #")')
+             if (myrank==0) write(glog,'("#                                                              #")') 
+             
+             firstcycle = .false.
+ 
+          elseif(parallel_strategy=='dd') then
+
+             ! Write current weights and histogram for the present rank only
+
+             ! Reset histogram and update wl_factor
+             histogram = 0.0_dp
+             wl_factor = wl_factor*0.5_dp
+             write(mylog,'("#                                                              #")') 
+             write(mylog,'("# Flatness criterion satisfied - updating wl_factor            #")')
+             write(mylog,'("#                                                              #")') 
+
+             firstcycle = .false.
+            
+          else
+             stop 'Unknown parallel strategy in mc_check_flatness'             
+          end if
+
+
           
        end if ! end if flat
        
@@ -2190,78 +2415,85 @@ contains
 
   end subroutine mc_check_chain_synchronisation
 
-  subroutine mc_compute_deltaG_from_eta()
-    !--------------------------------------------------------!
-    ! Assumes that the current set of multicanonical weights !
-    ! are perfect, i.e. exactly -G(mu), and computes the     !
-    ! free energy difference between the two lattices.       !
-    !--------------------------------------------------------!
-    ! D. Quigley March 2011                                  !
-    !--------------------------------------------------------!
-    use comms,      only : myrank,comms_allreduce_eta
-    use io,         only : glog
-    use constants,  only : hart_to_kJpm,Kb,hart_to_eV
-    use userparams, only : temperature,nbins,nwater,leshift
-    implicit none
-    real(kind=dp),allocatable,dimension(:) :: tmpP
-    real(kind=dp) :: Pnorm,pA,pB,deltaG,beta
-    integer :: i,ierr
-
-    ! MPI - allreduce on eta
-    call comms_allreduce_eta(weight,nbins)
-
-    allocate(tmpP(1:nbins),stat=ierr)
-    if (ierr/=0) stop 'Error allocating tmpP in mc_compute_deltaG_from_eta'
-
-    ! Compute an estimate for P(mu)
-    Pnorm = 0.0_dp
-    do i = 1,nbins
-       tmpP(i) = exp(weight(i))
-       Pnorm   = Pnorm + tmpP(i)*binwidth(i)
-    end do
-    do i = 1,nbins
-       tmpP(i) = tmpP(i)/Pnorm
-    end do
-
-    ! Integrate up to nbins/2
-    pA = 0.0_dp
-    do i = 1,nbins/2
-       pA = pA + tmpP(i)*0.5_dp*(binwidth(i)+binwidth(i+1))
-       pA = pA + 0.5_dp*binwidth(i)*(tmpP(i+1)-tmpP(i))
-    end do
-
-    ! Integrate the rest of the way
-    pB = 0.0_dp
-    do i = nbins/2+1,nbins
-       pB = pB + 0.5_dp*binwidth(i-1)*(tmpP(i-1)-tmpP(i))  
-       pB = pB + tmpP(i)*0.5_dp*(binwidth(i-1)+binwidth(i))
-    end do
-
-    ! Free energy difference in units of kT
-    ! negative if pA > pB, so energy A->B
-    ! A is lattice 1, B is lattice 2
-    deltaG = log(pA/pB)
-    beta = 1.0_dp/(Kb*temperature)
-    if (leshift) deltaG = deltaG + beta*ref_enthalpy(2) - beta*ref_enthalpy(1)
-
-    if (myrank==0) then
-       write(glog,'("#                                                              #")')  
-       write(glog,'("# Estimate of delta G direct from weights at cycle ",I10,"  #")')mc_cycle_num
-       write(glog,'("#------------------------------------------------------------  #")')
-       write(glog,'("#                                                              #")')  
-       write(glog,'("# G(lattice2) - G(lattice1) = ",F15.8, " kT/molecule      #")')deltaG/real(nwater,kind=dp)
-       write(glog,'("# G(lattice2) - G(lattice1) = ",F15.8, " J/mole           #")') &
-             Kb*temperature*hart_to_kJpm*1000.0_dp*deltaG/real(nwater,kind=dp)
-       write(glog,'("# G(lattice2) - G(lattice1) = ",F15.8, " meV/molecule     #")') &
-             Kb*temperature*hart_to_eV*1000.0_dp*deltaG/real(nwater,kind=dp) 
-       write(glog,'("#                                                              #")')  
-    end if
-
-    deallocate(tmpP)
-
-    return
-
-  end subroutine mc_compute_deltaG_from_eta
+!!$  subroutine mc_compute_deltaG_from_eta()
+!!$    !--------------------------------------------------------!
+!!$    ! Assumes that the current set of multicanonical weights !
+!!$    ! are perfect, i.e. exactly -G(mu), and computes the     !
+!!$    ! free energy difference between the two lattices.       !
+!!$    !--------------------------------------------------------!
+!!$    ! D. Quigley March 2011                                  !
+!!$    !--------------------------------------------------------!
+!!$    use comms,      only : myrank,comms_allreduce_eta
+!!$    use io,         only : glog
+!!$    use constants,  only : hart_to_kJpm,Kb,hart_to_eV
+!!$    use userparams, only : temperature,nbins,nwater,leshift, &
+!!$                           parallel_strategy
+!!$    implicit none
+!!$    real(kind=dp),allocatable,dimension(:) :: tmpP
+!!$    real(kind=dp) :: Pnorm,pA,pB,deltaG,beta
+!!$    integer :: i,ierr
+!!$
+!!$    ! MPI - allreduce on eta
+!!$    if ( parallel_strategy == 'mw' ) then
+!!$       call comms_allreduce_eta(weight,nbins)
+!!$    elseif ( parallel_strategy == 'dd' ) then
+!!$      
+!!$    else
+!!$       ! Unknown parallel strategy
+!!$    end if
+!!$
+!!$    allocate(tmpP(1:nbins),stat=ierr)
+!!$    if (ierr/=0) stop 'Error allocating tmpP in mc_compute_deltaG_from_eta'
+!!$
+!!$    ! Compute an estimate for P(mu)
+!!$    Pnorm = 0.0_dp
+!!$    do i = 1,nbins
+!!$       tmpP(i) = exp(weight(i))
+!!$       Pnorm   = Pnorm + tmpP(i)*binwidth(i)
+!!$    end do
+!!$    do i = 1,nbins
+!!$       tmpP(i) = tmpP(i)/Pnorm
+!!$    end do
+!!$
+!!$    ! Integrate up to nbins/2
+!!$    pA = 0.0_dp
+!!$    do i = 1,nbins/2
+!!$       pA = pA + tmpP(i)*0.5_dp*(binwidth(i)+binwidth(i+1))
+!!$       pA = pA + 0.5_dp*binwidth(i)*(tmpP(i+1)-tmpP(i))
+!!$    end do
+!!$
+!!$    ! Integrate the rest of the way
+!!$    pB = 0.0_dp
+!!$    do i = nbins/2+1,nbins
+!!$       pB = pB + 0.5_dp*binwidth(i-1)*(tmpP(i-1)-tmpP(i))  
+!!$       pB = pB + tmpP(i)*0.5_dp*(binwidth(i-1)+binwidth(i))
+!!$    end do
+!!$
+!!$    ! Free energy difference in units of kT
+!!$    ! negative if pA > pB, so energy A->B
+!!$    ! A is lattice 1, B is lattice 2
+!!$    deltaG = log(pA/pB)
+!!$    beta = 1.0_dp/(Kb*temperature)
+!!$    if (leshift) deltaG = deltaG + beta*ref_enthalpy(2) - beta*ref_enthalpy(1)
+!!$
+!!$    if (myrank==0) then
+!!$       write(glog,'("#                                                              #")')  
+!!$       write(glog,'("# Estimate of delta G direct from weights at cycle ",I10,"  #")')mc_cycle_num
+!!$       write(glog,'("#------------------------------------------------------------  #")')
+!!$       write(glog,'("#                                                              #")')  
+!!$       write(glog,'("# G(lattice2) - G(lattice1) = ",F15.8, " kT/molecule      #")')deltaG/real(nwater,kind=dp)
+!!$       write(glog,'("# G(lattice2) - G(lattice1) = ",F15.8, " J/mole           #")') &
+!!$             Kb*temperature*hart_to_kJpm*1000.0_dp*deltaG/real(nwater,kind=dp)
+!!$       write(glog,'("# G(lattice2) - G(lattice1) = ",F15.8, " meV/molecule     #")') &
+!!$             Kb*temperature*hart_to_eV*1000.0_dp*deltaG/real(nwater,kind=dp) 
+!!$       write(glog,'("#                                                              #")')  
+!!$    end if
+!!$
+!!$    deallocate(tmpP)
+!!$
+!!$    return
+!!$
+!!$  end subroutine mc_compute_deltaG_from_eta
 
   subroutine mc_compute_deltaG_from_hist()
     !--------------------------------------------------------!
@@ -2273,57 +2505,77 @@ contains
     !--------------------------------------------------------!
     ! D. Quigley March 2011                                  !
     !--------------------------------------------------------!
-    use comms,      only : myrank,comms_allreduce_hist,comms_allreduce_eta
+    use comms,      only : myrank,comms_allreduce_hist,comms_allreduce_eta, &
+                           comms_allreduce_uhist, comms_join_uhist
     use io,         only : glog 
     use constants,  only : hart_to_kJpm,Kb,hart_to_ev
-    use userparams, only : temperature,nbins,nwater,leshift
+    use userparams, only : temperature,nbins,nwater,leshift,samplerun, &
+                           parallel_strategy,window_overlap
     implicit none
-    real(kind=dp),allocatable,dimension(:) :: tmpP,normP
+    real(kind=dp),allocatable,dimension(:) :: normP
     real(kind=dp) :: Pnorm,pA,pB,deltaG,beta
     integer :: i,ierr
     character(10) :: cyclestring
     character(33) :: filename
 
-    ! MPI - all reduce on eta and histogram
-    call comms_allreduce_eta(weight,nbins)
-    call comms_allreduce_hist(histogram,nbins)
+    real(kind=dp),allocatable,dimension(:) :: joined
 
-    allocate(tmpP(1:nbins),stat=ierr)
-    if (ierr/=0) stop 'Error allocating tmpP in mc_compute_deltaG_from_hist'
+!!$    ! MPI - all reduce on eta and histogram
+!!$    call comms_allreduce_eta(weight,nbins)
+!!$    call comms_allreduce_hist(histogram,nbins)
+
+    allocate(joined(1:nbins),stat=ierr)
+    if (ierr/=0) stop 'Error allocating joined histogram in mc_compute_deltaG_from_hist'
+    
+    if (samplerun) then
+       if (parallel_strategy=='mw') then
+          call comms_allreduce_uhist(unbiased_hist,nbins)
+          joined = unbiased_hist
+       elseif (parallel_strategy=='dd') then
+          call comms_join_uhist(unbiased_hist,nbins,window_overlap,joined)          
+       else
+          stop 'Error in mc_compute_deltaG_from_hist - urecognised parallel strategy'
+       end if
+    end if
+
+!!$    allocate(tmpP(1:nbins),stat=ierr)
+!!$    if (ierr/=0) stop 'Error allocating tmpP in mc_compute_deltaG_from_hist'
     allocate(normP(1:nbins),stat=ierr)
     if (ierr/=0) stop 'Error allocating normP in mc_compute_deltaG_from_hist'
     
-    ! Compute normalised P as the current histogram
+    ! Compute normalised P as the current unbiased histogram
     Pnorm = 0.0_dp
     do i = 1,nbins
-       Pnorm = Pnorm + histogram(i)*binwidth(i)
+       Pnorm = Pnorm + joined(i)*binwidth(i)
     end do
     do i = 1,nbins
-       normP(i) = histogram(i)/Pnorm
+       normP(i) = joined(i)/Pnorm
     end do    
 
-    ! Compute an estimate for P(mu)
-    Pnorm = 0.0_dp
-    do i = 1,nbins
-       tmpP(i) = normP(i)*exp(weight(i))
-       Pnorm   = Pnorm + tmpP(i)*binwidth(i)
-    end do
-    do i = 1,nbins
-       tmpP(i) = tmpP(i)/Pnorm
-    end do
+!!$    ! Compute an estimate for P(mu)
+!!$    Pnorm = 0.0_dp
+!!$    do i = 1,nbins
+!!$       tmpP(i) = normP(i)*exp(weight(i))
+!!$       Pnorm   = Pnorm + tmpP(i)*binwidth(i)
+!!$    end do
+!!$    do i = 1,nbins
+!!$       tmpP(i) = tmpP(i)/Pnorm
+!!$    end do
 
-    ! Integrate up to nbins/2
+    ! Sum up to nbins/2
     pA = 0.0_dp
     do i = 1,nbins/2
-       pA = pA + tmpP(i)*0.5_dp*(binwidth(i)+binwidth(i+1))
-       pA = pA + 0.5_dp*binwidth(i)*(tmpP(i+1)-tmpP(i))
+!!$       pA = pA + P(i)*0.5_dp*(binwidth(i)+binwidth(i+1))
+!!$       pA = pA + 0.5_dp*binwidth(i)*(tmpP(i+1)-tmpP(i))
+       pA = pA + normP(i)*binwidth(i)
     end do
 
-    ! Integrate the rest of the way
+    ! Sum the rest of the way
     pB = 0.0_dp
     do i = nbins/2+1,nbins
-       pB = pB + 0.5_dp*binwidth(i-1)*(tmpP(i-1)-tmpP(i))
-       pB = pB + tmpP(i)*0.5_dp*(binwidth(i-1)+binwidth(i))
+!!$       pB = pB + 0.5_dp*binwidth(i-1)*(tmpP(i-1)-tmpP(i))
+!!$       pB = pB + tmpP(i)*0.5_dp*(binwidth(i-1)+binwidth(i))
+       pB = pB + normP(i)*binwidth(i)
     end do
 
     ! Free energy difference in units of kT
@@ -2349,18 +2601,20 @@ contains
              Kb*temperature*hart_to_eV*1000.0_dp*deltaG/real(nwater,kind=dp) 
        write(glog,'("#                                                              #")')  
        
+       call flush(glog)
+
        open(unit=ubh,file=trim(filename),status='replace',iostat=ierr)
        if (ierr/=0) stop 'Error opening file for unweighted histogram'
        
        do i=1,nbins
-          write(ubh,*)mu_bin(i),tmpP(i)
+          write(ubh,*)mu_bin(i),normP(i)
        end do
        
        close(ubh)
 
     end if
 
-    deallocate(tmpP,normP)
+    deallocate(normP,joined)
 
     return
 

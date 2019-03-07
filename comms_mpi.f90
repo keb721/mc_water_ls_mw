@@ -532,7 +532,7 @@ subroutine comms_join_uhist(uhist,length,overlap,joined)
 
   subroutine comms_set_histogram(hist_in,length)
     !=========================================================================!
-    ! Zero's out the internal array hist_last_sync. To be used when zeroing   !
+    ! Sets the internal array hist_last_sync. To be used when zeroing         ! 
     ! the histogram across all nodes.                                         !
     !-------------------------------------------------------------------------!
     ! Written by David Quigley June 2003                                      !
@@ -549,7 +549,7 @@ subroutine comms_join_uhist(uhist,length,overlap,joined)
 
   subroutine comms_set_uhistogram(hist_in,length)
     !=========================================================================!
-    ! Zero's out the internal array hist_last_sync. To be used when zeroing   !
+    ! Sets the internal array uhist_last_sync. To be used when zeroing        !
     ! the histogram across all nodes.                                         !
     !-------------------------------------------------------------------------!
     ! Written by David Quigley June 2003                                      !

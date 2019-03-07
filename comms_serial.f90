@@ -167,6 +167,80 @@ contains
 
   end subroutine comms_allreduce_eta
 
+  subroutine comms_get_max(myval,maxval)
+    !=========================================================================!
+    ! Find the maximum of a double over all MPI ranks.                        !
+    !-------------------------------------------------------------------------!
+    ! Written by David Quigley February 2019                                  !
+    !=========================================================================!
+    implicit none
+    real(kind=dp),intent(in)  :: myval
+    real(kind=dp),intent(out) :: maxval
+    
+    ! In serial there is only one rank so...
+    maxval = myval
+
+    return
+
+  end subroutine comms_get_max
+
+  subroutine comms_allreduce_uhist(histogram,Length)
+    !=========================================================================!
+    ! Wrapper for mpi_allreduce (real - double precision)                     !
+    !-------------------------------------------------------------------------!
+    ! Written by David Quigley June 2003                                      !
+    ! Unbiased histogram version February 2019                                !
+    !=========================================================================!
+    implicit none
+    integer,intent(in)   :: Length
+    real(kind=dp),intent(inout),dimension(Length)   :: histogram
+    real(kind=dp),dimension(:),allocatable :: buff
+
+    ! No nothing, single copy of histogram
+
+    return
+
+  end subroutine comms_allreduce_uhist
+
+
+subroutine comms_join_uhist(uhist,length,overlap,joined)
+    !=========================================================================!
+    ! Join unbiased histogram together from multiple overlapping windows.     !
+    !-------------------------------------------------------------------------!
+    ! Written by David Quigley February 2019                                  !
+    !=========================================================================!
+
+    implicit none
+    integer,intent(in) :: length,overlap
+    real(kind=dp),intent(in),dimension(1:length) :: uhist
+    real(kind=dp),intent(out),dimension(1:length) :: joined
+
+    ! In serial just copy uhist into joined
+    joined = uhist
+
+    return
+
+  end subroutine comms_join_uhist
+
+  subroutine comms_join_eta(weight,Length,overlap,joined)
+    !=========================================================================!
+    ! Join  weight functions together from multiple overlapping windows.      !
+    !-------------------------------------------------------------------------!
+    ! Written by David Quigley February 2019                                  !
+    !=========================================================================!
+    implicit none
+    integer,intent(in) :: length,overlap
+    real(kind=dp),intent(in),dimension(1:length) :: weight
+    real(kind=dp),intent(out),dimension(1:length) :: joined
+
+    ! In serial just copy weight into joined
+    joined = weight
+
+    return
+
+  end subroutine comms_join_eta
+
+
   subroutine comms_allreduce_hist(histogram,Length)
     !=========================================================================!
     ! Wrapper for mpi_allreduce (real - double precision)                     !
@@ -184,7 +258,7 @@ contains
 
   subroutine comms_set_histogram(hist_in,length)
     !=========================================================================!
-    ! Zero's out the internal array hist_last_sync. To be used when zeroing   !
+    ! Sets the internal array hist_last_sync. To be used when zeroing         !
     ! the histogram across all nodes.                                         !
     !-------------------------------------------------------------------------!
     ! Written by David Quigley June 2003                                      !
@@ -197,6 +271,23 @@ contains
     return
 
   end subroutine comms_set_histogram
+
+  subroutine comms_set_uhistogram(hist_in,length)
+    !=========================================================================!
+    ! Sets the internal array uhist_last_sync. To be used when zeroing        !
+    ! the histogram across all nodes.                                         !
+    !-------------------------------------------------------------------------!
+    ! Written by David Quigley June 2003                                      !
+    !=========================================================================!
+    implicit none
+    integer,intent(in) :: length
+    real(kind=dp),dimension(length),intent(in) :: hist_in
+
+
+    return
+
+  end subroutine comms_set_uhistogram
+
 
   subroutine Comms_Finalise()
 

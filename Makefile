@@ -23,7 +23,7 @@ OBJECTS   = constants.o timer.o userparams.o util.o random.o \
 
 F90       = mpif90
 LD        = mpif90
-FFLAGS    = -O2 -Wall -Wextra -DMINU
+FFLAGS    = -O3 -Wall -Wextra 
 
 .PRECIOUS: %.o
 .PHONY:  clean

@@ -9,9 +9,8 @@
 module model
 
   use constants, only : dp,int32                ! Minimal useage where practical
-!  use hbond_module                              ! G. Tribello's H-bond module
 
-  implicit none                                 !Impose strong typing
+  implicit none                                 ! Impose strong typing
   private   
 
   !---------------------------------------------------------------------------!

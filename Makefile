@@ -18,12 +18,18 @@ endif
 
 # Define objects in dependency order
 OBJECTS   = constants.o timer.o userparams.o util.o random.o \
-	    data_structures.o $(COMMS_OBJ) molint.o io.o init.o \
+	    data_structures.o $(COMMS_OBJ) molint.o io.o rcm_mod.o init.o \
 	    mc_moves.o main.o
 
-F90       = mpif90
-LD        = mpif90
-FFLAGS    = -O3 -Wall -Wextra 
+# GNU gfortran/OpenMPI 
+#F90       = mpif90
+#LD        = mpif90
+#FFLAGS    = -O3 -ffinite-math-only -freciprocal-math -fno-trapping-math -fno-math-errno -march=native -mrecip=sqrt -mfpmath=sse -msse2
+
+# Intel ifort and MKL
+F90    = mpiifort
+LD     = mpiifort
+FFLAGS =  -O3 -assume buffered_io  -march=native -mkl -DMKL
 
 .PRECIOUS: %.o
 .PHONY:  clean

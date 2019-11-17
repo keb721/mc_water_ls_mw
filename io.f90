@@ -72,7 +72,7 @@ contains
     implicit none
 
     ! command line data
-    integer                       :: iarg,idata,ierr
+    integer                       :: iarg,idata,ierr=0
     integer                       :: num_args
     character(30), dimension(0:10):: command_line
     character(30)                 :: file_name
@@ -80,8 +80,8 @@ contains
 !!$    integer,  external ::  iargc
 !!$    external  getarg
 
-    ! declare namelists
-    namelist/potential/model_type,mw_sigma,mw_epsilon,mw_lambda,sw_bigA,sw_B,sw_gamma,sw_a,sw_p,sw_q,cos0
+    ! declare namelists ( model parameters set as parameters/constants in molint.F90 for performance )
+    namelist/potential/model_type !,mw_sigma,mw_epsilon,mw_lambda,sw_bigA,sw_B,sw_gamma,sw_a,sw_p,sw_q,cos0
 
     namelist/thermal/temperature,pressure
 
@@ -305,17 +305,19 @@ contains
     call comms_bcastchar(seedname,30)
 
 
-    call comms_bcastreal(mw_sigma,1)
-    call comms_bcastreal(mw_epsilon,1)
-    call comms_bcastreal(mw_lambda,1)
+    ! Don't broadcast these - now defined as parameters in molint.F90
 
-    call comms_bcastreal(sw_bigA,1)
-    call comms_bcastreal(sw_B,1)
-    call comms_bcastreal(sw_gamma,1)
-    call comms_bcastreal(sw_a,1)
-    call comms_bcastint(sw_p,1)
-    call comms_bcastint(sw_q,1)
-    call comms_bcastreal(cos0,1)
+!!$    call comms_bcastreal(mw_sigma,1)
+!!$    call comms_bcastreal(mw_epsilon,1)
+!!$    call comms_bcastreal(mw_lambda,1)
+!!$
+!!$    call comms_bcastreal(sw_bigA,1)
+!!$    call comms_bcastreal(sw_B,1)
+!!$    call comms_bcastreal(sw_gamma,1)
+!!$    call comms_bcastreal(sw_a,1)
+!!$    call comms_bcastint(sw_p,1)
+!!$    call comms_bcastint(sw_q,1)
+!!$    call comms_bcastreal(cos0,1)
 
     call comms_bcastchar(parallel_strategy,2)
     call comms_bcastint(window_overlap,1)

@@ -161,8 +161,9 @@ program mc_water
   ! Setup a signal handler for SIGTERM !   
   ! which is usually signal no. 15.    !
   !------------------------------------!
-  call signal(15,cleanexit)
-
+  call signal('SIGTERM',cleanexit)
+  ! KEB: I think this might just make it more generally portable but it now runs/compiles locally for me
+  ! See hackpad for comments
 
   !--------------------------------------!
   ! Computing initial overlap parameter  !
